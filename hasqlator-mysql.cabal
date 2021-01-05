@@ -1,4 +1,4 @@
-Name:		hasqly-mysql
+Name:		hasqlator-mysql
 Version: 	0.0.1
 Synopsis:	composable SQL generation
 Category: 	Database
@@ -8,7 +8,7 @@ License:	BSD3
 License-file:	LICENSE
 Author:		Kristof Bastiaensen
 Maintainer:	Kristof Bastiaensen
-Bug-Reports: 	https://github.com/kuribas/hasqly-mysql/issues
+Bug-Reports: 	https://github.com/kuribas/hasqlator-mysql/issues
 Build-type:	Simple
 Cabal-version:	>=1.10
 Description:  A mid level applicative SQL generation library
@@ -19,14 +19,15 @@ Description:  A mid level applicative SQL generation library
  
 source-repository head
   type:		git
-  location:	https://github.com/kuribas/hasqly-mysql
+  location:	https://github.com/kuribas/hasqlator-mysql
 
 Library
   Ghc-options: -Wall
   default-language: Haskell2010
-  Build-depends: base >= 3 && < 5, mtl >= 2.1.3, mysql-haskell, text, bytestring, time, dlist, scientific, binary, dlist
+  Build-depends: base >= 3 && < 5, mtl >= 2.1.3, mysql-haskell, text, bytestring, time, dlist, scientific, binary, dlist, unordered-containers
   hs-source-dirs:
     src                 
   Exposed-Modules:
-    Database.Hasqly
+    Database.Hasqlator
+    Database.Hasqlator.Typed
 

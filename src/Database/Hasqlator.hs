@@ -1,15 +1,13 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
-Module      : Database.Hasqly
+Module      : Database.Hasqelator
 Description : SQL generation
 Copyright   : (c) Kristof Bastiaensen, 2020
 License     : BSD-3
@@ -20,13 +18,14 @@ Portability : ghc
 
 -}
 
-module Database.Hasqly
+module Database.Hasqlator
   ( -- * Querying
     Query, Command, select, mergeSelect, replaceSelect,
 
     -- * Query Clauses
     QueryClauses, from, innerJoin, leftJoin, rightJoin, outerJoin, emptyJoins,
-    where_, emptyWhere, groupBy_, having, emptyHaving, orderBy, limit, limitOffset,
+    where_, emptyWhere, groupBy_, having, emptyHaving, orderBy, limit,
+    limitOffset,
 
     -- * Selectors
     Selector, as,
@@ -46,16 +45,18 @@ module Database.Hasqly
 
     -- * Expressions
     subQuery,
-    arg, fun, op, (.>), (.+), (.-),
+    arg, fun, op, (.>), (.<), (.>=), (.<=), (.+), (.-), (.*), (./), (.=), (.++),
+    (./=), (.&&), (.||), abs_, negate_, signum_, sum_, rawText,
 
     -- * Insertion
-    Insertor, insertValues, insertSelect, into, lensInto,
+    Insertor, insertValues, insertSelect, into, Getter, lensInto,
     insert1, insert2, insert3, insert4, insert5,
     insert6, insert7, insert8, insert9, insert10,
     ToSql,
     
     -- * Rendering Queries
-    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder, ToQueryBuilder, FromSql
+    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder, ToQueryBuilder,
+    FromSql
   )
 
 where
@@ -187,14 +188,13 @@ data SQLError = SQLError String
 data Selector a = Selector (DList QueryBuilder)
                   (StateT [MySQLValue] (Either SQLError) a)
                   
-                  
 instance Functor Selector where
-  fmap f (Selector cols cast) = Selector cols (fmap f cast)
+  fmap f (Selector cols cast) = Selector cols $ fmap f cast
 
 instance Applicative Selector where
   Selector cols1 cast1 <*> Selector cols2 cast2 =
     Selector (cols1 <> cols2) (cast1 <*> cast2)
-  pure x = Selector DList.empty (pure x)
+  pure x = Selector DList.empty $ pure x
 
 instance Semigroup a => Semigroup (Selector a) where
   (<>) = liftA2 (<>)
@@ -234,7 +234,7 @@ instance ToQueryBuilder Command where
                           , parentized $ commaSep $
                             map (Builder.byteString . Text.encodeUtf8) cols
                           , "VALUES", valuesB]
-    in QueryBuilder builder builder (DList.empty)
+    in QueryBuilder builder builder DList.empty
   toQueryBuilder (InsertSelect table cols rows queryBody) =
     unwords $
     [ "INSERT INTO", table
@@ -278,7 +278,11 @@ instance ToQueryBuilder QueryBody where
 
 instance ToQueryBuilder (Query a) where
   toQueryBuilder (Query _ body) = toQueryBuilder body
-        
+
+rawText :: Text -> QueryBuilder
+rawText t = QueryBuilder builder builder DList.empty where
+  builder = Builder.byteString (Text.encodeUtf8 t)
+                                  
 instance ToQueryBuilder JoinType where
   toQueryBuilder InnerJoin = "INNER JOIN"
   toQueryBuilder LeftJoin = "LEFT JOIN"
@@ -387,12 +391,31 @@ fun :: Text -> [QueryBuilder] -> QueryBuilder
 fun name exprs = fromText name <> parentized (commaSep exprs)
 
 op :: Text -> QueryBuilder -> QueryBuilder -> QueryBuilder
-op name e1 e2 = e1 <> " " <> fromText name <> " " <> e2
+op name e1 e2 = parentized $ e1 <> " " <> fromText name <> " " <> e2
 
-(.>), (.+), (.-) :: QueryBuilder -> QueryBuilder -> QueryBuilder
+(.>), (.<), (.>=), (.<=), (.+), (.-), (./), (.*), (.=), (./=), (.++), (.&&),
+  (.||)
+  :: QueryBuilder -> QueryBuilder -> QueryBuilder
 (.>) = op ">"
+(.<) = op "<"
+(.>=) = op ">="
+(.<=) = op "<="
 (.+) = op "+"
+(.*) = op "*"
+(./) = op "/"
 (.-) = op "-"
+(.=) = op "="
+(./=) = op "<>"
+a .++ b = fun "concat" [a, b]
+(.&&) = op "and"
+(.||) = op "or"
+
+abs_, signum_, negate_, sum_ :: QueryBuilder -> QueryBuilder
+abs_ x = fun "abs" [x]
+signum_ x = fun "sign" [x]
+negate_ x = fun "-" [x]
+sum_ x = fun "sum" [x]
+
 
 -- | insert a single value directly
 insert1 :: ToSql a => Text -> Insertor a
@@ -485,14 +508,16 @@ insert10 s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 =
 into :: ToSql b => (a -> b) -> Text -> Insertor a
 into toVal theField = Insertor [theField] ((:[]) . toSqlValue . toVal)
 
+-- | A Getter type compatible with the lens library
+type Getter s a = (a -> Const a a) -> s -> Const a s
+
 -- | `lensInto` uses a lens to map the part to a field.  For example:
 --
 -- > insertValues "Person" (_1 `lensInto` "name" <> _2 `lensInto` "age")
 -- >   [("Bart Simpson", 10), ("Lisa Simpson", 8)]
 
-lensInto :: ToSql b => ((b -> Const b b) -> (a -> Const b a)) -> Text
-         -> Insertor a
-lensInto lens theField = into (getConst . lens Const) theField
+lensInto :: ToSql b => Getter a b -> Text -> Insertor a
+lensInto lens = into (getConst . lens Const)
 
 subQuery :: ToQueryBuilder a => a -> QueryBuilder
 subQuery = parentized . toQueryBuilder
@@ -557,7 +582,7 @@ emptyQueryBody = QueryBody Nothing [] [] [] [] [] Nothing
 
 select :: Selector a -> QueryClauses -> Query a
 select selector (QueryClauses clauses) =
-  Query selector (clauses `appEndo` emptyQueryBody)
+  Query selector $ clauses `appEndo` emptyQueryBody
 
 mergeSelect :: Query b -> (a -> b -> c) -> Selector a -> Query c
 mergeSelect (Query selector2 body) f selector1 =
@@ -572,7 +597,7 @@ insertValues = InsertValues
 insertSelect :: QueryBuilder -> [QueryBuilder] -> [QueryBuilder] -> QueryClauses
              -> Command
 insertSelect table toColumns fromColumns (QueryClauses clauses) =
-  InsertSelect table (toColumns) (fromColumns) (appEndo clauses emptyQueryBody)
+  InsertSelect table toColumns fromColumns $ appEndo clauses emptyQueryBody
 
 -- | combinator for aliasing columns.
 as :: QueryBuilder -> QueryBuilder -> QueryBuilder
@@ -772,3 +797,4 @@ instance ToSql Text where
 instance ToSql a => ToSql (Maybe a) where
   toSqlValue Nothing = MySQLNull
   toSqlValue (Just v) = toSqlValue v
+
