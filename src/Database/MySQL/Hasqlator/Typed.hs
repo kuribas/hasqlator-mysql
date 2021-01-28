@@ -28,7 +28,8 @@ module Database.MySQL.Hasqlator.Typed
     substr, true_, false_,
 
     -- * Clauses
-    innerJoin, leftJoin, where_, groupBy_, having, orderBy, limit, limitOffset,
+    from, innerJoin, leftJoin, where_, groupBy_, having, orderBy, limit,
+    limitOffset,
 
     -- * Insertion
     Insertor, insertValues, insertSelect, insertData, skipInsert, into,
@@ -52,8 +53,8 @@ import Control.Monad.State
 import GHC.Exts (Constraint)
 import GHC.TypeLits as TL
 import Data.Functor.Contravariant
-import GHC.Generics
-
+import qualified GHC.Generics as Generics (from)
+import GHC.Generics hiding (from)
 import qualified Database.MySQL.Hasqlator as H
 
 data Nullable = Nullable | NotNull
@@ -99,7 +100,7 @@ newtype Expression (nullable :: Nullable) a =
   Expression { exprBuilder :: H.QueryBuilder }
 
 -- | An expression of any type
-newtype SomeExpression = SomeExpression  H.QueryBuilder
+newtype SomeExpression = SomeExpression H.QueryBuilder
 
 -- | Remove types of an expression
 someExpr :: Expression nullable a -> SomeExpression
@@ -158,6 +159,8 @@ type Operator a b c = forall nullable .
                       (Expression nullable a ->
                        Expression nullable b ->
                        Expression nullable c)
+
+infixl 9 @@ 
 
 -- | reference a field from a joined table
 (@@) :: CheckExprNullable (JoinNullable leftJoined fieldNull) exprNull
@@ -348,7 +351,7 @@ insertData :: (Generic a, Generic b, InsertGeneric tbl db (Rep a ()) (Rep b ()))
            => a -> Insertor tbl db b
 insertData = contramap from' . insertDataGeneric . from'
   where from' :: Generic a => a -> Rep a ()
-        from' = from
+        from' = Generics.from
 
 skipInsert :: Insertor tbl db a
 skipInsert = mempty
@@ -387,6 +390,12 @@ newAlias prefix = do
 addClauses :: H.QueryClauses -> QueryInner database ()
 addClauses c = modify $ \clsState ->
   clsState { clausesBuild = clausesBuild clsState <> c }
+
+from :: Table table database
+     -> Query database (TableAlias table database 'InnerJoined)
+from (Table tableName) = Query $
+  do addClauses $ H.from $ H.rawSql tableName
+     TableAlias <$> newAlias (Text.take 1 tableName)
 
 innerJoin :: Table table database
           -> (TableAlias table database 'InnerJoined ->
@@ -446,37 +455,3 @@ insertSelect (Table tbl) (Query query) =
   H.insertSelect (H.rawSql tbl) (map (H.rawSql . intoTo) intos)
   (map intoFrom intos) clauses
   where (intos, ClauseState clauses _) = runState query emptyClauseState
-  
-{-
-
-data SqoDb
-
-id_ :: Field "Interventions" SqoDb 'NotNull String
-id_ = Field "id" "Interventions"
-
-data sqlInterventionOverviewTables = sqlInterventionOverviewTables {
-  intervention :: TableAlias SqoDb InterventionTabel
-  
-  }
-
-sqlInterventionOverview = do
-  i <- from intervention
-  od <- join objectDomain $ \od -> od@@uuid .= i@@objectUuid
-  p <- join plant $ \p -> p@@uuid .= od@@domain_object_uuid
-  upc <- join userPlantCache $ \upc -> upc@@plantId .= p@@id_
-  io <- leftJoin identityObject $ \io -> io@name .= i@assignee_key
-  for_ mbUserId $ \userId ->
-    where_ $ user_id .= io@@userId
-  let sqlInterventionOverviewSelector = do
-     id_ <- col ( i@@id_)
-     leoId <- col $ i@@interventionNumber
-       ref <- ("interventions/" <>) <$> col i@@interventionNumber
-     objectUuid <- col $ 
-       (case_ (field inverterObjectType)
-         [ ("PLANT", "plants/")
-         , ("INVERTER", "inverters/")
-         , ("LOGGER", "loggers/") ]
-         , inverterObjectUuid ])
-     pure $ Intervention {id_, leoId, ref, objectUuid}
-  pure ((i, od, p), sqlInterventionOverviewSelector)
--}
