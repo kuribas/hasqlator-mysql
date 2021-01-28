@@ -5,6 +5,8 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE KindSignatures #-}
 
 {-|
 Module      : Database.Hasqelator
@@ -18,14 +20,14 @@ Portability : ghc
 
 -}
 
-module Database.Hasqlator
+module Database.MySQL.Hasqlator
   ( -- * Querying
     Query, Command, select, mergeSelect, replaceSelect,
 
     -- * Query Clauses
     QueryClauses, from, innerJoin, leftJoin, rightJoin, outerJoin, emptyJoins,
-    where_, emptyWhere, groupBy_, having, emptyHaving, orderBy, limit,
-    limitOffset,
+    where_, emptyWhere, groupBy_, having, emptyHaving, QueryOrdering(..),
+    orderBy, limit, limitOffset,
 
     -- * Selectors
     Selector, as,
@@ -46,16 +48,14 @@ module Database.Hasqlator
     -- * Expressions
     subQuery,
     arg, fun, op, (.>), (.<), (.>=), (.<=), (.+), (.-), (.*), (./), (.=), (.++),
-    (./=), (.&&), (.||), abs_, negate_, signum_, sum_, rawText,
+    (./=), (.&&), (.||), abs_, negate_, signum_, sum_, rawSql, substr,
 
     -- * Insertion
     Insertor, insertValues, insertSelect, into, Getter, lensInto,
-    insert1, insert2, insert3, insert4, insert5,
-    insert6, insert7, insert8, insert9, insert10,
-    ToSql,
+    insertOne, ToSql,
     
     -- * Rendering Queries
-    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder, ToQueryBuilder,
+    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder, ToQueryBuilder(..),
     FromSql
   )
 
@@ -70,6 +70,7 @@ import Data.Monoid hiding ((<>))
 import Data.String hiding (unwords)
 import Data.List hiding (unwords)
 import qualified Data.DList as DList
+import GHC.Generics hiding (Selector, from)
   
 import Data.DList (DList)
 import Data.Scientific
@@ -83,6 +84,7 @@ import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Text.Encoding as Text
 import Data.Text (Text)
 import Data.Binary.Put
+import Data.Functor.Contravariant
 
 class FromSql a where
   fromSql :: MySQLValue -> Either SQLError a
@@ -279,8 +281,8 @@ instance ToQueryBuilder QueryBody where
 instance ToQueryBuilder (Query a) where
   toQueryBuilder (Query _ body) = toQueryBuilder body
 
-rawText :: Text -> QueryBuilder
-rawText t = QueryBuilder builder builder DList.empty where
+rawSql :: Text -> QueryBuilder
+rawSql t = QueryBuilder builder builder DList.empty where
   builder = Builder.byteString (Text.encodeUtf8 t)
                                   
 instance ToQueryBuilder JoinType where
@@ -328,6 +330,9 @@ instance Semigroup (Insertor a) where
 
 instance Monoid (Insertor a) where
   mempty = Insertor mempty mempty
+
+instance Contravariant Insertor where
+  contramap f (Insertor x g) = Insertor x (g . f)
 
 class HasQueryClauses a where
   mergeClauses :: a -> QueryClauses -> a
@@ -393,6 +398,9 @@ fun name exprs = fromText name <> parentized (commaSep exprs)
 op :: Text -> QueryBuilder -> QueryBuilder -> QueryBuilder
 op name e1 e2 = parentized $ e1 <> " " <> fromText name <> " " <> e2
 
+substr :: QueryBuilder -> QueryBuilder -> QueryBuilder -> QueryBuilder
+substr field start end = fun "substr" [field, start, end]
+
 (.>), (.<), (.>=), (.<=), (.+), (.-), (./), (.*), (.=), (./=), (.++), (.&&),
   (.||)
   :: QueryBuilder -> QueryBuilder -> QueryBuilder
@@ -418,95 +426,19 @@ sum_ x = fun "sum" [x]
 
 
 -- | insert a single value directly
-insert1 :: ToSql a => Text -> Insertor a
-insert1 s = Insertor [s] (\t -> [toSqlValue t])
+insertOne :: ToSql a => Text -> Insertor a
+insertOne s = Insertor [s] (\t -> [toSqlValue t])
 
--- | insert the values of a tuple
-insert2 :: (ToSql a1, ToSql a2) => Text -> Text -> Insertor (a1, a2)
-insert2 s1 s2 = Insertor [s1, s2] $
-                   \(t1, t2) -> [toSqlValue t1, toSqlValue t2]
-
-insert3 :: (ToSql a1, ToSql a2, ToSql a3)
-        => Text -> Text -> Text -> Insertor (a1, a2, a3)
-insert3 s1 s2 s3 = Insertor [s1, s2, s3] $
-    \(t1, t2, t3) -> [toSqlValue t1, toSqlValue t2, toSqlValue t3]
-
-insert4 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4)
-        => Text -> Text -> Text -> Text -> Insertor (a1, a2, a3, a4)
-insert4 s1 s2 s3 s4 = Insertor [s1, s2, s3, s4] $
-    \(t1, t2, t3, t4) -> [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-                          toSqlValue t4]
+-- | insert a datastructure
 
 
-insert5 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5)
-        => Text -> Text -> Text -> Text -> Text
-        -> Insertor (a1, a2, a3, a4, a5)
-insert5 s1 s2 s3 s4 s5 = Insertor [s1, s2, s3, s4, s5] $
-    \(t1, t2, t3, t4, t5) -> [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-                          toSqlValue t4, toSqlValue t5]
-
-insert6 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5, ToSql a6)
-        => Text -> Text -> Text  -> Text -> Text -> Text
-        -> Insertor (a1, a2, a3, a4, a5, a6)
-insert6 s1 s2 s3 s4 s5 s6 = Insertor [s1, s2, s3, s4, s5, s6] $
-    \(t1, t2, t3, t4, t5, t6) -> [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-                          toSqlValue t4, toSqlValue t5, toSqlValue t6]
-
-insert7 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5, ToSql a6,
-            ToSql a7)
-        => Text -> Text  -> Text -> Text -> Text -> Text -> Text
-        -> Insertor (a1, a2, a3, a4, a5, a6, a7)
-insert7 s1 s2 s3 s4 s5 s6 s7 =
-    Insertor [s1, s2, s3, s4, s5, s6, s7] $
-    \(t1, t2, t3, t4, t5, t6, t7) ->
-      [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-       toSqlValue t4, toSqlValue t5, toSqlValue t6,
-       toSqlValue t7]
-
-insert8 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5, ToSql a6,
-            ToSql a7, ToSql a8)
-        => Text -> Text -> Text -> Text -> Text -> Text -> Text
-        -> Text
-        -> Insertor (a1, a2, a3, a4, a5, a6, a7, a8)
-insert8 s1 s2 s3 s4 s5 s6 s7 s8 =
-    Insertor [s1, s2, s3, s4, s5, s6, s7, s8] $
-    \(t1, t2, t3, t4, t5, t6, t7, t8) ->
-      [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-       toSqlValue t4, toSqlValue t5, toSqlValue t6,
-       toSqlValue t7, toSqlValue t8]
-
-insert9 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5, ToSql a6,
-            ToSql a7, ToSql a8, ToSql a9)
-        => Text -> Text -> Text -> Text -> Text -> Text -> Text
-        -> Text -> Text
-        -> Insertor (a1, a2, a3, a4, a5, a6, a7, a8, a9)
-insert9 s1 s2 s3 s4 s5 s6 s7 s8 s9 =
-    Insertor [s1, s2, s3, s4, s5, s6, s7, s8, s9] $
-    \(t1, t2, t3, t4, t5, t6, t7, t8, t9) ->
-      [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-       toSqlValue t4, toSqlValue t5, toSqlValue t6,
-       toSqlValue t7, toSqlValue t8, toSqlValue t9]
-      
-insert10 :: (ToSql a1, ToSql a2, ToSql a3, ToSql a4, ToSql a5, ToSql a6,
-             ToSql a7, ToSql a8, ToSql a9, ToSql a10)
-         => Text -> Text -> Text -> Text -> Text -> Text
-         -> Text -> Text -> Text -> Text
-         -> Insertor (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
-insert10 s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 =
-    Insertor [s1, s2, s3, s4, s5, s6, s7, s8, s9, s10] $
-    \(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10) ->
-      [toSqlValue t1, toSqlValue t2, toSqlValue t3,
-       toSqlValue t4, toSqlValue t5, toSqlValue t6,
-       toSqlValue t7, toSqlValue t8, toSqlValue t9,
-       toSqlValue t10]
-
--- | `into` uses the given extractor function to map the part to a
+-- | `into` uses the given accessor function to map the part to a
 -- field.  For example:
 --
 -- > insertValues "Person" (fst `into` "name" <> snd `into` "age")
 -- >   [("Bart Simpson", 10), ("Lisa Simpson", 8)]
 into :: ToSql b => (a -> b) -> Text -> Insertor a
-into toVal theField = Insertor [theField] ((:[]) . toSqlValue . toVal)
+into toVal = contramap toVal . insertOne
 
 -- | A Getter type compatible with the lens library
 type Getter s a = (a -> Const a a) -> s -> Const a s

@@ -11,11 +11,14 @@ Maintainer:	Kristof Bastiaensen
 Bug-Reports: 	https://github.com/kuribas/hasqlator-mysql/issues
 Build-type:	Simple
 Cabal-version:	>=1.10
-Description:  A mid level applicative SQL generation library
-  .
-  Haskqly intends to be a mid-level SQL generation library.  It doesn't use advanced type extensions
-  to encode the schema in the types., but provides a light applicative layer to easy the conversion
-  between haskell and SQL.  It is inspired by the clojures honeysql library.
+Description:  A simple but expressive applicative SQL generation library for mysql
+              .
+              Haskqlator is a simple but expressive SQL generation library.  Instead of
+              matching haskell records, or using complicate type level computations to match
+              haskell types to database schemas, it uses a simple applicative interface to
+              convert between SQL and haskell.  The produced SQL matches exactly the SQL
+              written by the user.  An addition layer is provided to encode database schemas
+              as haskell values, and give more type safety.
  
 source-repository head
   type:		git
@@ -28,6 +31,6 @@ Library
   hs-source-dirs:
     src                 
   Exposed-Modules:
-    Database.Hasqlator
-    Database.Hasqlator.Typed
+    Database.MySQL.Hasqlator
+    Database.MySQL.Hasqlator.Typed
 
