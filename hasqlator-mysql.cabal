@@ -27,7 +27,7 @@ source-repository head
 Library
   Ghc-options: -Wall
   default-language: Haskell2010
-  Build-depends: base >= 3 && < 5, mtl >= 2.1.3, mysql-haskell, text, bytestring, time, dlist, scientific, binary, dlist, unordered-containers
+  Build-depends: base >= 3 && < 5, mtl >= 2.1.3, mysql-haskell, text, bytestring, time, dlist, scientific, binary, dlist, containers
   hs-source-dirs:
     src                 
   Exposed-Modules:

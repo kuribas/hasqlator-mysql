@@ -1,6 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
@@ -33,15 +34,15 @@ module Database.MySQL.Hasqlator
     Selector, as,
 
     -- ** polymorphic selector
-    col,
+    sel,
     -- ** specialised selectors
-    -- | The following are specialised versions of `col`.  Using these
+    -- | The following are specialised versions of `sel`.  Using these
     -- may make refactoring easier, for example accidently swapping
-    -- @`col` "age"@ and @`col` "name"@ would not give a type error,
-    -- while @intCol "age"@ and @textCol "name"@ most likely would.
-    intCol, integerCol, doubleCol, floatCol, scientificCol, 
-    localTimeCol, timeOfDayCol, diffTimeCol, dayCol, byteStringCol,
-    textCol,
+    -- @`sel` "age"@ and @`sel` "name"@ would not give a type error,
+    -- while @intSel "age"@ and @textSel "name"@ most likely would.
+    intSel, integerSel, doubleSel, floatSel, scientificSel, 
+    localTimeSel, timeOfDaySel, diffTimeSel, daySel, byteStringSel,
+    textSel,
     -- ** other selectors
     values, values_,
 
@@ -51,12 +52,12 @@ module Database.MySQL.Hasqlator
     (./=), (.&&), (.||), abs_, negate_, signum_, sum_, rawSql, substr,
 
     -- * Insertion
-    Insertor, insertValues, insertSelect, into, Getter, lensInto,
-    insertOne, ToSql,
+    Insertor, insertValues, insertSelect, insertData, skipInsert, into, Getter,
+    lensInto, insertOne, ToSql,
     
     -- * Rendering Queries
-    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder, ToQueryBuilder(..),
-    FromSql
+    renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder,
+    ToQueryBuilder(..), FromSql
   )
 
 where
@@ -71,6 +72,7 @@ import Data.String hiding (unwords)
 import Data.List hiding (unwords)
 import qualified Data.DList as DList
 import GHC.Generics hiding (Selector, from)
+import qualified GHC.Generics as Generics (from)
   
 import Data.DList (DList)
 import Data.Scientific
@@ -93,7 +95,7 @@ class ToSql a where
   toSqlValue :: a -> MySQLValue
 
 instance FromSql a => IsString (Selector a) where
-  fromString = col . fromString
+  fromString = sel . fromString
 
 class ToQueryBuilder a where
   toQueryBuilder :: a -> QueryBuilder
@@ -120,15 +122,15 @@ selectOne f fieldName =
 
 -- | The polymorphic selector.  The return type is determined by type
 -- inference.
-col :: FromSql a => QueryBuilder -> Selector a
-col fieldName = selectOne fromSql fieldName
+sel :: FromSql a => QueryBuilder -> Selector a
+sel fieldName = selectOne fromSql fieldName
 
 -- | an integer field (TINYINT.. BIGINT).  Any bounded haskell integer
 -- type can be used here , for example `Int`, `Int32`, `Word32`.  An
 -- `Overflow` ur `Underflow` error will be raised if the value doesn't
 -- fit the type.
-intCol :: (Show a, Bounded a, Integral a) => QueryBuilder -> Selector a
-intCol e = selectOne intFromSql e
+intSel :: (Show a, Bounded a, Integral a) => QueryBuilder -> Selector a
+intSel e = selectOne intFromSql e
 
 -- | Un unbounded integer field, either a bounded integer (TINYINT,
 -- etc...) or DECIMAL in the database.  Will throw a type error if the
@@ -138,44 +140,44 @@ intCol e = selectOne intFromSql e
 -- if the exponent is large, even fillup the space and crash your
 -- program!  Only use this on trusted inputs, or use Scientific
 -- instead.
-integerCol :: QueryBuilder -> Selector Integer
-integerCol = col
+integerSel :: QueryBuilder -> Selector Integer
+integerSel = sel
 
 -- | a DOUBLE field.
-doubleCol :: QueryBuilder -> Selector Double
-doubleCol = col
+doubleSel :: QueryBuilder -> Selector Double
+doubleSel = sel
 
 -- | a FLOAT field.
-floatCol :: QueryBuilder -> Selector Float
-floatCol = col
+floatSel :: QueryBuilder -> Selector Float
+floatSel = sel
 
 -- | A DECIMAL or NUMERIC field.
-scientificCol :: QueryBuilder -> Selector Scientific
-scientificCol = col
+scientificSel :: QueryBuilder -> Selector Scientific
+scientificSel = sel
 
 -- | a DATETIME or a TIMESTAMP field.
-localTimeCol :: QueryBuilder -> Selector LocalTime
-localTimeCol = col
+localTimeSel :: QueryBuilder -> Selector LocalTime
+localTimeSel = sel
 
 -- | A TIME field taken as a specific time.
-timeOfDayCol :: QueryBuilder -> Selector TimeOfDay
-timeOfDayCol = col
+timeOfDaySel :: QueryBuilder -> Selector TimeOfDay
+timeOfDaySel = sel
 
 -- | a TIME field taken as a time duration.
-diffTimeCol :: QueryBuilder -> Selector DiffTime
-diffTimeCol = col
+diffTimeSel :: QueryBuilder -> Selector DiffTime
+diffTimeSel = sel
 
 -- | A DATE field.
-dayCol :: QueryBuilder -> Selector Day
-dayCol = col
+daySel :: QueryBuilder -> Selector Day
+daySel = sel
 
 -- | A binary BLOB field.
-byteStringCol :: QueryBuilder -> Selector StrictBS.ByteString
-byteStringCol = col
+byteStringSel :: QueryBuilder -> Selector StrictBS.ByteString
+byteStringSel = sel
 
 -- | a TEXT field.
-textCol :: QueryBuilder -> Selector Text
-textCol = col
+textSel :: QueryBuilder -> Selector Text
+textSel = sel
 
 data SQLError = SQLError String
               | ResultSetCountError
@@ -220,8 +222,8 @@ data JoinType = InnerJoin | LeftJoin | RightJoin | OuterJoin
 instance ToQueryBuilder Command where
   toQueryBuilder (Update table setting body) =
     let pairQuery (a, b) = a <> " = " <> b
-    in unwords $
-       [ "UPDATE", table
+    in unwords
+        [ "UPDATE", table
        , "SET", commaSep $ map pairQuery setting
        , toQueryBuilder body
        ] 
@@ -238,7 +240,7 @@ instance ToQueryBuilder Command where
                           , "VALUES", valuesB]
     in QueryBuilder builder builder DList.empty
   toQueryBuilder (InsertSelect table cols rows queryBody) =
-    unwords $
+    unwords
     [ "INSERT INTO", table
     , parentized $ commaSep cols
     , "SELECT", parentized $ commaSep rows
@@ -347,7 +349,7 @@ instance HasQueryClauses Command where
   mergeClauses (InsertSelect table toColumns fromColumns queryBody)
     (QueryClauses clauses) =
     InsertSelect table toColumns fromColumns (appEndo clauses queryBody)
-  mergeClauses command__@(InsertValues _ _ _) _ =
+  mergeClauses command__@InsertValues{} _ =
     command__
   mergeClauses (Delete query__) clauses =
     Delete $ mergeClauses query__ clauses
@@ -430,7 +432,49 @@ insertOne :: ToSql a => Text -> Insertor a
 insertOne s = Insertor [s] (\t -> [toSqlValue t])
 
 -- | insert a datastructure
+class InsertGeneric (fields :: *) (data_ :: *) where
+  insertDataGeneric :: fields -> Insertor data_
 
+genFst :: (a :*: b) () -> a ()
+genFst (a :*: _) = a
+
+genSnd :: (a :*: b) () -> b ()
+genSnd (_ :*: b) = b
+
+instance (InsertGeneric (a ()) (c ()),
+          InsertGeneric (b ()) (d ())) =>
+  InsertGeneric ((a :*: b) ()) ((c :*: d) ()) where
+  insertDataGeneric (a :*: b) =
+    contramap genFst (insertDataGeneric a) <>
+    contramap genSnd (insertDataGeneric b)
+
+instance InsertGeneric (a ()) (b ()) =>
+  InsertGeneric (M1 m1 m2 a ()) (M1 m3 m4 b ()) where
+  insertDataGeneric = contramap unM1 . insertDataGeneric . unM1
+
+instance ToSql b => InsertGeneric (K1 r Text ()) (K1 r b ()) where
+  insertDataGeneric = contramap unK1 . insertOne . unK1
+
+instance InsertGeneric (K1 r (Insertor a) ()) (K1 r a ()) where
+  insertDataGeneric = contramap unK1 . unK1
+
+-- | `insertData` inserts a tuple or other product type into the given
+-- fields.  It uses generics to match the input to the fields. For
+-- example:
+--
+-- > insert "Person" (insertData ("name", "age"))
+-- >   [Person "Bart Simpson" 10, Person "Lisa Simpson" 8]
+
+insertData :: (Generic a, Generic b, InsertGeneric (Rep a ()) (Rep b ()))
+           => a -> Insertor b
+insertData = contramap from' . insertDataGeneric . from'
+  where from' :: Generic a => a -> Rep a ()
+        from' = Generics.from
+
+-- | skipInsert is mempty specialized to an Insertor.  It can be used
+-- to skip fields when using insertData.
+skipInsert :: Insertor a
+skipInsert = mempty
 
 -- | `into` uses the given accessor function to map the part to a
 -- field.  For example:
