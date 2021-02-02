@@ -48,8 +48,8 @@ module Database.MySQL.Hasqlator
 
     -- * Expressions
     subQuery,
-    arg, fun, op, (.>), (.<), (.>=), (.<=), (.+), (.-), (.*), (./), (.=), (.++),
-    (./=), (.&&), (.||), abs_, negate_, signum_, sum_, rawSql, substr,
+    arg, fun, op, (>.), (<.), (>=.), (<=.), (+.), (-.), (*.), (/.), (=.), (++.),
+    (/=.), (&&.), (||.), abs_, negate_, signum_, sum_, rawSql, substr,
 
     -- * Insertion
     Insertor, insertValues, insertSelect, insertData, skipInsert, into, Getter,
@@ -403,22 +403,22 @@ op name e1 e2 = parentized $ e1 <> " " <> fromText name <> " " <> e2
 substr :: QueryBuilder -> QueryBuilder -> QueryBuilder -> QueryBuilder
 substr field start end = fun "substr" [field, start, end]
 
-(.>), (.<), (.>=), (.<=), (.+), (.-), (./), (.*), (.=), (./=), (.++), (.&&),
-  (.||)
+(>.), (<.), (>=.), (<=.), (+.), (-.), (/.), (*.), (=.), (/=.), (++.), (&&.),
+  (||.)
   :: QueryBuilder -> QueryBuilder -> QueryBuilder
-(.>) = op ">"
-(.<) = op "<"
-(.>=) = op ">="
-(.<=) = op "<="
-(.+) = op "+"
-(.*) = op "*"
-(./) = op "/"
-(.-) = op "-"
-(.=) = op "="
-(./=) = op "<>"
-a .++ b = fun "concat" [a, b]
-(.&&) = op "and"
-(.||) = op "or"
+(>.) = op ">"
+(<.) = op "<"
+(>=.) = op ">="
+(<=.) = op "<="
+(+.) = op "+"
+(*.) = op "*"
+(/.) = op "/"
+(-.) = op "-"
+(=.) = op "="
+(/=.) = op "<>"
+a ++. b = fun "concat" [a, b]
+(&&.) = op "and"
+(||.) = op "or"
 
 abs_, signum_, negate_, sum_ :: QueryBuilder -> QueryBuilder
 abs_ x = fun "abs" [x]

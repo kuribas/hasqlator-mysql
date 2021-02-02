@@ -26,19 +26,19 @@ module Database.MySQL.Hasqlator.Typed
     -- * Expressions
     Expression, SomeExpression, someExpr, Operator, 
     arg, argMaybe, nullable, cast, unsafeCast,
-    op, fun1, fun2, fun3, (.>), (.<), (.>=), (.<=), (.&&), (.||),
+    op, fun1, fun2, fun3, (>.), (<.), (>=.), (<=.), (&&.), (||.),
     substr, true_, false_,
 
     -- * Clauses
-    from, innerJoin, leftJoin, subJoin, subLeftJoin, where_, groupBy_, having,
-    orderBy, limit, limitOffset,
+    from, fromSubQuery, innerJoin, leftJoin, joinSubQuery, leftJoinSubQuery,
+    where_, groupBy_, having, orderBy, limit, limitOffset,
 
     -- * Insertion
     Insertor, insertValues, insertSelect, insertData, skipInsert, into,
     lensInto, insertOne, exprInto, Into,
     
     -- * imported from Database.MySQL.Hasqlator
-    H.Getter, H.ToSql, H.FromSql, subQuery
+    H.Getter, H.ToSql, H.FromSql, subQueryExpr
   )
 where
 import Data.Text (Text)
@@ -119,15 +119,15 @@ instance IsString (Expression nullable Text) where
   fromString = arg . fromString
 
 instance Semigroup (Expression nullable Text) where
-  (<>) = fun2 (H..++)
+  (<>) = fun2 (H.++.)
 
 instance Monoid (Expression nullable Text) where
   mempty = arg ""
 
 instance (Num n, H.ToSql n) => Num (Expression nullable n) where
-  (+) = op (H..+)
-  (-) = op (H..-)
-  (*) = op (H..*)
+  (+) = op (H.+.)
+  (-) = op (H.-.)
+  (*) = op (H.*.)
   negate = fun1 H.negate_
   abs = fun1 H.abs_
   signum = fun1 H.signum_
@@ -135,7 +135,7 @@ instance (Num n, H.ToSql n) => Num (Expression nullable n) where
 
 instance (Fractional n, H.ToSql n)
          => Fractional (Expression nullable n) where
-  (/) = op (H../)
+  (/) = op (H./.)
   fromRational = arg . fromRational
   
 data Table table database = Table Text
@@ -241,15 +241,15 @@ substr :: Expression nullable Text -> Expression nullable Int
        -> Expression nullable Text
 substr = fun3 H.substr
 
-(.>), (.<), (.>=), (.<=) :: H.ToSql a => Operator a a Bool
-(.>) = op (H..>)
-(.<) = op (H..<)
-(.>=) = op (H..>=)
-(.<=) = op (H..<=)
+(>.), (<.), (>=.), (<=.) :: H.ToSql a => Operator a a Bool
+(>.) = op (H.>.)
+(<.) = op (H.<.)
+(>=.) = op (H.>=.)
+(<=.) = op (H.<=.)
 
-(.||), (.&&) :: Operator Bool Bool Bool
-(.||) = op (H..||)
-(.&&) = op (H..&&)
+(||.), (&&.) :: Operator Bool Bool Bool
+(||.) = op (H.||.)
+(&&.) = op (H.&&.)
 
 true_, false_ :: Expression nullable Bool
 true_ = Expression $ pure $ H.rawSql "true"
@@ -448,9 +448,11 @@ leftJoin (Table tableName) joinCondition = Query $ do
 
 class SubQueryExpr (joinType :: JoinType) inExpr outExpr where
   -- The ReaderT monad takes the alias of the subquery table.
-  -- The State monad uses index of the last expression in the select clause.
-  -- It generates the SELECT clause expression with aliases e1, e2, ...
-  -- The outExpr contains the output aliases.
+  -- The State monad uses the index of the last expression in the select clause.
+  -- It generates SELECT clause expressions with aliases e1, e2, ...
+  -- The outExpr contains just the output aliases.
+  -- input and output should be product types, and have the same number of
+  -- elements.
   subJoinGeneric :: Proxy joinType
                  -> inExpr
                  -> ReaderT Text (State Int)
@@ -492,55 +494,68 @@ runAsSubQuery (Query sq) =
      put $ ClauseState currentClauses newAliases
      pure (subQueryBody, subQueryRet)
 
-subQuery :: Query database (Expression nullable a) -> Expression nullable a
-subQuery sq = Expression $
+subQueryExpr :: Query database (Expression nullable a) -> Expression nullable a
+subQueryExpr sq = Expression $
   do (subQueryBody, Expression subQuerySelect) <- runAsSubQuery sq 
      selectBuilder <- subQuerySelect
      pure $ H.subQuery $ H.select (H.values_ [selectBuilder]) subQueryBody
 
-anySubJoin :: (Generic inExprs,
-               Generic outExprs,
-               SubQueryExpr joinType (Rep inExprs ()) (Rep outExprs ()))
-        => Proxy joinType
-        -> ([H.QueryBuilder] -> [H.QueryBuilder] -> H.QueryClauses)
-        -> Query database inExprs
-        -> (outExprs -> Expression nullable Bool)
-        -> Query database outExprs
-anySubJoin p joinBuilder sq condition = Query $ do
+-- 
+subJoinBody :: (Generic inExprs,
+              Generic outExprs,
+              SubQueryExpr joinType (Rep inExprs ()) (Rep outExprs ()))
+            => Proxy joinType
+            -> Query database inExprs
+            -> QueryInner (H.QueryBuilder, outExprs)
+subJoinBody p sq = do
   sqAlias <- newAlias "sq"
   (subQueryBody, sqExprs) <- runAsSubQuery sq
-  let (selectExprs, outExprRep) =
-       flip evalState 1 $
-       flip runReaderT sqAlias $
-       subJoinGeneric p $
-       from' sqExprs
+  let from' :: Generic inExprs => inExprs -> Rep inExprs ()
+      from' = Generics.from
+      to' :: Generic outExpr => Rep outExpr () -> outExpr
+      to' = Generics.to
+      (selectExprs, outExprRep) = flip evalState 1 $
+                                  flip runReaderT sqAlias $
+                                  subJoinGeneric p $
+                                  from' sqExprs
       outExpr = to' outExprRep
   selectBuilder <- DList.toList <$> traverse runSomeExpression selectExprs
+  pure ( H.subQuery $ H.select (H.values_ selectBuilder) subQueryBody
+       , outExpr)
+
+joinSubQuery :: (Generic inExprs,
+                 Generic outExprs,
+                 SubQueryExpr 'InnerJoined (Rep inExprs ()) (Rep outExprs ()))
+             => Query database inExprs
+             -> (outExprs -> Expression nullable Bool)
+             -> Query database outExprs
+joinSubQuery sq condition = Query $ do
+  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'InnerJoined) sq 
   conditionBuilder <- runExpression $ condition outExpr
-  addClauses $ joinBuilder
-    [H.subQuery $ H.select (H.values_ selectBuilder) subQueryBody]
-    [conditionBuilder]
+  addClauses $ H.innerJoin [subQueryBody] [conditionBuilder]
   pure outExpr
-  where from' :: Generic inExprs => inExprs -> Rep inExprs ()
-        from' = Generics.from
-        to' :: Generic outExpr => Rep outExpr () -> outExpr
-        to' = Generics.to
 
-subJoin :: (Generic inExprs,
-            Generic outExprs,
-            SubQueryExpr 'InnerJoined (Rep inExprs ()) (Rep outExprs ()))
-        => Query database inExprs
-        -> (outExprs -> Expression nullable Bool)
-        -> Query database outExprs
-subJoin = anySubJoin (Proxy :: Proxy 'InnerJoined) H.innerJoin
-
-subLeftJoin :: (Generic inExprs,
-                Generic outExprs,
-                SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
-            => Query database inExprs
-            -> (outExprs -> Expression nullable Bool)
+leftJoinSubQuery :: (Generic inExprs,
+                     Generic outExprs,
+                     SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
+                 => Query database inExprs
+                 -> (outExprs -> Expression nullable Bool)
             -> Query database outExprs
-subLeftJoin = anySubJoin (Proxy :: Proxy 'LeftJoined) H.leftJoin
+leftJoinSubQuery sq condition = Query $ do
+  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq 
+  conditionBuilder <- runExpression $ condition outExpr
+  addClauses $ H.leftJoin [subQueryBody] [conditionBuilder]
+  pure outExpr
+
+fromSubQuery :: (Generic inExprs,
+                 Generic outExprs,
+                 SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
+             => Query database inExprs
+             -> Query database outExprs
+fromSubQuery sq = Query $ do              
+  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq 
+  addClauses $ H.from subQueryBody
+  pure outExpr
 
 where_ :: Expression nullable Bool -> Query database ()
 where_ expr = Query $ do
