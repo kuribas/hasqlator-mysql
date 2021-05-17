@@ -11,6 +11,9 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Database.MySQL.Hasqlator.Typed
   ( -- * Database Types
@@ -71,7 +74,7 @@ type family CheckInsertable (fieldNullable :: Nullable) fieldType a
   CheckInsertable 'Nullable a (Maybe a) = ()
   CheckInsertable 'Nullable a a = ()
   CheckInsertable 'NotNull a a = ()
-  CheckInsertable t n ft =
+  CheckInsertable n t ft =
     TypeError ('TL.Text "Cannot insert value of type " ':<>:
                'ShowType t ':<>:
                'TL.Text " into " ':<>:
@@ -99,7 +102,7 @@ type family JoinNullable (leftJoined :: JoinType) (field :: Nullable)
     JoinNullable 'InnerJoined nullable = nullable
     JoinNullable 'LeftJoined _ = 'Nullable
 
-data Field table database (nullable :: Nullable) a =
+data Field (table :: Symbol) database (nullable :: Nullable) a =
   Field Text Text
  
 newtype Expression (nullable :: Nullable) a =
@@ -110,6 +113,16 @@ newtype SomeExpression =
   SomeExpression { runSomeExpression :: QueryInner H.QueryBuilder }
 
 newtype Selector a = Selector (QueryInner (H.Selector a))
+
+instance Functor Selector where
+  fmap f (Selector s) = Selector (fmap f <$> s)
+instance Applicative Selector where
+  pure x = Selector $ pure $ pure x
+  Selector a <*> Selector b = Selector $ liftA2 (<*>) a b
+instance Semigroup a => Semigroup (Selector a) where
+  Selector a <> Selector b = Selector $ liftA2 (<>) a b
+instance Monoid a => Monoid (Selector a) where
+  mempty = Selector $ pure mempty
 
 -- | Remove types of an expression
 someExpr :: Expression nullable a -> SomeExpression
@@ -138,7 +151,7 @@ instance (Fractional n, H.ToSql n)
   (/) = op (H./.)
   fromRational = arg . fromRational
   
-data Table table database = Table Text
+data Table (table :: Symbol) database = Table (Maybe Text) Text
 
 -- | An table alias that can be used inside the Query.  The function
 -- inside the newtype can also be applied directly to create an
@@ -150,7 +163,7 @@ newtype Tbl table database (joinType :: JoinType) =
           Field table database fieldNull a ->
           Expression exprNull a }
 
-newtype Insertor table database a = Insertor (H.Insertor a)
+newtype Insertor (table :: Symbol) database a = Insertor (H.Insertor a)
   deriving (Monoid, Semigroup, Contravariant)
 
 data ClauseState = ClauseState
@@ -179,7 +192,7 @@ type Operator a b c = forall nullable .
 
 infixl 9 @@
 
-  -- | Create an expression from an aliased table and a field.
+-- | Create an expression from an aliased table and a field.
 (@@) :: CheckExprNullable (JoinNullable joinType fieldNull) exprNull
      => Tbl table database (joinType :: JoinType)
      -> Field table database fieldNull a
@@ -329,9 +342,8 @@ instance Castable Word64 where
 -- | Cast the return type of an expression to any other type, without
 -- changing the query. Since this library adds static typing on top of
 -- SQL, you may sometimes want to use this to get back the lenient
--- behaviour of SQL.  Obviously this opens up more possibilies for
--- runtime errors, so it's up to the programmer to ensure it's used
--- correctly.
+-- behaviour of SQL.  This opens up more possibilies for runtime
+-- errors, so it's up to the programmer to ensure type correctness.
 unsafeCast :: Expression nullable a -> Expression nullable b
 unsafeCast = coerce
 
@@ -400,7 +412,7 @@ insertValues :: Table table database
              -> Insertor table database a
              -> [a]
              -> H.Command
-insertValues (Table tableName) (Insertor i) =
+insertValues (Table _schema tableName) (Insertor i) =
   H.insertValues (H.rawSql tableName) i
 
 newAlias :: Text -> QueryInner Text
@@ -416,33 +428,38 @@ addClauses c = modify $ \clsState ->
 
 from :: Table table database
      -> Query database (Tbl table database 'InnerJoined)
-from (Table tableName) = Query $
+from (Table schema tableName) = Query $
   do alias <- newAlias (Text.take 1 tableName)
-     addClauses $ H.from $ H.rawSql tableName `H.as` H.rawSql alias
+     addClauses $ H.from $
+       H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as` H.rawSql alias
      pure $ mkTableAlias alias
 
 innerJoin :: Table table database
           -> (Tbl table database 'InnerJoined ->
               Expression nullable Bool)
           -> Query database (Tbl table database 'InnerJoined)
-innerJoin (Table tableName) joinCondition = Query $ do
+innerJoin (Table schema tableName) joinCondition = Query $ do
   alias <- newAlias (Text.take 1 tableName)
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
   addClauses $
-    H.innerJoin [H.rawSql tableName `H.as` H.rawSql alias] [exprBuilder]
+    H.innerJoin [H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as`
+                 H.rawSql alias]
+    [exprBuilder]
   pure tblAlias
 
 leftJoin :: Table table database
          -> (Tbl table database 'LeftJoined ->
              Expression nullable Bool)
          -> Query database (Tbl table database 'LeftJoined)
-leftJoin (Table tableName) joinCondition = Query $ do
+leftJoin (Table schema tableName) joinCondition = Query $ do
   alias <- newAlias (Text.take 1 tableName)
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
   addClauses $
-    H.leftJoin [H.rawSql tableName `H.as` H.rawSql alias] [exprBuilder]
+    H.leftJoin [H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as`
+                H.rawSql alias]
+    [exprBuilder]
   pure tblAlias
 
 
@@ -530,7 +547,7 @@ joinSubQuery :: (Generic inExprs,
              -> (outExprs -> Expression nullable Bool)
              -> Query database outExprs
 joinSubQuery sq condition = Query $ do
-  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'InnerJoined) sq 
+  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'InnerJoined) sq
   conditionBuilder <- runExpression $ condition outExpr
   addClauses $ H.innerJoin [subQueryBody] [conditionBuilder]
   pure outExpr
@@ -542,7 +559,7 @@ leftJoinSubQuery :: (Generic inExprs,
                  -> (outExprs -> Expression nullable Bool)
             -> Query database outExprs
 leftJoinSubQuery sq condition = Query $ do
-  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq 
+  (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq
   conditionBuilder <- runExpression $ condition outExpr
   addClauses $ H.leftJoin [subQueryBody] [conditionBuilder]
   pure outExpr
@@ -585,7 +602,7 @@ limit count = Query $ addClauses $ H.limit count
 limitOffset :: Int -> Int -> Query database ()
 limitOffset count offset = Query $ addClauses $ H.limitOffset count offset
 
-newtype Into database table =
+newtype Into database (table :: Symbol) =
   Into { runInto :: QueryInner (Text, H.QueryBuilder) }
 
 exprInto :: CheckExprNullable exprNullable fieldNullable
@@ -598,8 +615,9 @@ exprInto expr (Field _ fieldName) =
 insertSelect :: Table table database
              -> Query database [Into database table]
              -> H.Command
-insertSelect (Table tbl) (Query query) =
-  H.insertSelect (H.rawSql tbl) (map (H.rawSql . fst) intos)
+insertSelect (Table schema tbl) (Query query) =
+  H.insertSelect (H.rawSql (maybe mempty (<> ".") schema <> tbl))
+  (map (H.rawSql . fst) intos)
   (map snd intos) clauses
   where (intos, ClauseState clauses _) =
           runState (query >>= traverse runInto) emptyClauseState

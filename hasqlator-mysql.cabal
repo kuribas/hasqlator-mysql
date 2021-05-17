@@ -27,10 +27,26 @@ source-repository head
 Library
   Ghc-options: -Wall
   default-language: Haskell2010
-  Build-depends: base >= 3 && < 5, mtl >= 2.1.3, mysql-haskell, text, bytestring, time, dlist, scientific, binary, dlist, containers
+  Build-depends: base >= 3 && < 5,
+                 binary,
+                 bytestring,
+                 containers,
+                 dlist,
+                 dlist,
+                 io-streams >= 1.5.2.1,
+                 megaparsec,
+                 mtl >= 2.1.3,
+                 mysql-haskell,
+                 prettyprinter,
+                 scientific,
+                 text,
+                 time,
+                 template-haskell,
+                 aeson,
+                 pretty-simple
   hs-source-dirs:
     src                 
   Exposed-Modules:
     Database.MySQL.Hasqlator
     Database.MySQL.Hasqlator.Typed
-
+    Database.MySQL.Hasqlator.Typed.Schema

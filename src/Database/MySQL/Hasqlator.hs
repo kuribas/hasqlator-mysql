@@ -49,7 +49,7 @@ module Database.MySQL.Hasqlator
     -- * Expressions
     subQuery,
     arg, fun, op, (>.), (<.), (>=.), (<=.), (+.), (-.), (*.), (/.), (=.), (++.),
-    (/=.), (&&.), (||.), abs_, negate_, signum_, sum_, rawSql, substr,
+    (/=.), (&&.), (||.), abs_, negate_, signum_, sum_, rawSql, substr, in_,
 
     -- * Insertion
     Insertor, insertValues, insertSelect, insertData, skipInsert, into, Getter,
@@ -57,12 +57,16 @@ module Database.MySQL.Hasqlator
     
     -- * Rendering Queries
     renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder,
-    ToQueryBuilder(..), FromSql
+    ToQueryBuilder(..), FromSql,
+
+    -- * Executing Queries
+    executeQuery, executeCommand
   )
 
 where
 
 import Database.MySQL.Base hiding (Query, Command)
+import qualified Database.MySQL.Base as MySQL
 import Prelude hiding (unwords)
 import Control.Monad.State
 import Control.Applicative
@@ -86,7 +90,11 @@ import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Text.Encoding as Text
 import Data.Text (Text)
 import Data.Binary.Put
+import Data.Traversable
 import Data.Functor.Contravariant
+import qualified System.IO.Streams as Streams
+import Control.Exception (throw, Exception)
+import Data.Aeson
 
 class FromSql a where
   fromSql :: MySQLValue -> Either SQLError a
@@ -109,6 +117,21 @@ renderPreparedStmt :: ToQueryBuilder a => a -> (LazyBS.ByteString, [MySQLValue])
 renderPreparedStmt a = (Builder.toLazyByteString pstmt, DList.toList args)
   where
     QueryBuilder _ pstmt args = toQueryBuilder a
+
+-- | Execute a Query which returns a resultset.  May throw a
+-- `SQLError` exception.  See the mysql-haskell package for other
+-- exceptions it may throw.
+executeQuery :: MySQLConn -> Query a -> IO [a]
+executeQuery conn q@(Query s _) =
+  do is <- fmap snd $ MySQL.query_ conn $ MySQL.Query $ renderStmt q
+     results <- Streams.toList is
+     for results $ either throw pure . runSelector s
+
+-- | Execute a Command which doesn't return a result-set. May throw a
+-- `SQLError` exception.  See the mysql-haskell package for other
+-- exceptions it may throw.
+executeCommand :: MySQLConn -> Command -> IO OK
+executeCommand conn c = MySQL.execute_ conn $ MySQL.Query $ renderStmt c
 
 selectOne :: (MySQLValue -> Either SQLError a) -> QueryBuilder -> Selector a
 selectOne f fieldName =
@@ -179,18 +202,24 @@ byteStringSel = sel
 textSel :: QueryBuilder -> Selector Text
 textSel = sel
 
+
 data SQLError = SQLError String
               | ResultSetCountError
               | TypeError MySQLValue String
               | Underflow
               | Overflow
+              deriving Show
 
+instance Exception SQLError
 -- | Selectors contain the target fields or expressions in a SQL
 -- SELECT statement, and perform the conversion to haskell.  Selectors
 -- are instances of `Applicative`, so they can return the desired
 -- haskell type.
 data Selector a = Selector (DList QueryBuilder)
                   (StateT [MySQLValue] (Either SQLError) a)
+
+runSelector :: Selector a -> [MySQLValue] -> Either SQLError a
+runSelector (Selector _ run) = evalStateT run
                   
 instance Functor Selector where
   fmap f (Selector cols cast) = Selector cols $ fmap f cast
@@ -281,7 +310,8 @@ instance ToQueryBuilder QueryBody where
         , "OFFSET", fromString (show offset) ]
 
 instance ToQueryBuilder (Query a) where
-  toQueryBuilder (Query _ body) = toQueryBuilder body
+  toQueryBuilder (Query (Selector dl _) body) =
+    "SELECT " <> commaSep (DList.toList dl) <> " " <> toQueryBuilder body
 
 rawSql :: Text -> QueryBuilder
 rawSql t = QueryBuilder builder builder DList.empty where
@@ -579,6 +609,9 @@ insertSelect table toColumns fromColumns (QueryClauses clauses) =
 as :: QueryBuilder -> QueryBuilder -> QueryBuilder
 as e1 e2 = e1 <> " AS " <> e2
 
+in_ :: QueryBuilder -> [QueryBuilder] -> QueryBuilder
+in_ e l = e <> " IN " <> parentized (commaSep l)
+
 -- | Read the columns directly as a `MySQLValue` type without conversion.
 values :: [QueryBuilder] -> Selector [MySQLValue]
 values cols = Selector (DList.fromList cols) $
@@ -627,6 +660,12 @@ integerFromSql (MySQLDecimal d) = case floatingOrInteger d of
   Left (_ :: Double) -> throwError $ TypeError (MySQLDecimal d) "Integer"
   Right i -> pure i
 integerFromSql v = throwError $ TypeError v "Integer"
+
+
+instance FromSql Bool where
+  fromSql (MySQLInt8U x) = pure $ x /= 0
+  fromSql (MySQLInt8 x) = pure $ x /= 0
+  fromSql v = throwError $ TypeError v "Bool"
   
 instance FromSql Int where
   fromSql = intFromSql
@@ -773,4 +812,7 @@ instance ToSql Text where
 instance ToSql a => ToSql (Maybe a) where
   toSqlValue Nothing = MySQLNull
   toSqlValue (Just v) = toSqlValue v
+
+instance ToSql Bool where
+  toSqlValue = MySQLInt8U . fromIntegral . fromEnum
 
