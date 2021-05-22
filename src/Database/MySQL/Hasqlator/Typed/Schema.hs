@@ -5,7 +5,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
-module Database.MySQL.Hasqlator.Typed.Schema where
+module Database.MySQL.Hasqlator.Typed.Schema
+  (TableInfo(..), fetchTableInfo, pprTableInfo, Properties(..),
+   defaultProperties, makeDBTypes) where
 import Database.MySQL.Hasqlator
 import qualified Database.MySQL.Hasqlator.Typed as T
 import Database.MySQL.Base(MySQLConn)
@@ -274,7 +276,7 @@ defaultProperties = Properties
       downcase n <> (if downcase n `elem` reserved then "_" else mempty)
   , tableNameModifier = \n ->
       downcase n <> (if downcase n `elem` reserved then "_" else mempty) <> "_tbl"
-  , classNameModifier = \n -> "Has" <> upcase n <> "Field"
+  , classNameModifier = \n -> "Has_" <> n <> "_Field"
   , includeInsertor = True
   , insertorTypeModifier = \n -> removeUnderscore (upcase n) <> "Fields"
   , insertorNameModifier = \n ->
