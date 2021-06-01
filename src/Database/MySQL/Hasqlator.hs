@@ -88,13 +88,16 @@ import qualified Data.ByteString.Lazy as LazyBS
 import Data.ByteString.Lazy.Builder (Builder)
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Text.Encoding as Text
+import qualified Data.Text as Text
 import Data.Text (Text)
 import Data.Binary.Put
 import Data.Traversable
 import Data.Functor.Contravariant
 import qualified System.IO.Streams as Streams
 import Control.Exception (throw, Exception)
-import Data.Aeson
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Text as Aeson
+import qualified Data.Text.Lazy as LazyText
 
 class FromSql a where
   fromSql :: MySQLValue -> Either SQLError a
@@ -206,8 +209,7 @@ textSel = sel
 data SQLError = SQLError String
               | ResultSetCountError
               | TypeError MySQLValue String
-              | Underflow
-              | Overflow
+              | ConversionError Text
               deriving Show
 
 instance Exception SQLError
@@ -638,12 +640,12 @@ intFromSql r = case r of
        "Int (" <> show (minBound :: a) <> ", " <> show (maxBound :: a) <> ")"
   where castFromInt :: Int64 -> Either SQLError a
         castFromInt i
-          | i < fromIntegral (minBound :: a) = throwError Underflow
-          | i > fromIntegral (maxBound :: a) = throwError Overflow
+          | i < fromIntegral (minBound :: a) = throwError $ ConversionError "underflow"
+          | i > fromIntegral (maxBound :: a) = throwError $ ConversionError "overflow"
           | otherwise = pure $ fromIntegral i
         castFromWord :: Word64 -> Either SQLError a
         castFromWord i
-          | i > fromIntegral (maxBound :: a) = throwError Overflow
+          | i > fromIntegral (maxBound :: a) = throwError $ ConversionError "overflow"
           | otherwise = pure $ fromIntegral i
 
 integerFromSql :: MySQLValue -> Either SQLError Integer
@@ -722,7 +724,7 @@ instance FromSql LocalTime where
 instance FromSql TimeOfDay where
   fromSql r = case r of
     MySQLTime sign_ t | sign_ >= 0 -> pure t
-                      | otherwise -> throwError Overflow
+                      | otherwise -> throwError $ ConversionError "overflow"
     _ -> Left $ TypeError r "TimeOfDay"
 
 instance FromSql DiffTime where
@@ -751,6 +753,13 @@ instance FromSql a => FromSql (Maybe a) where
     MySQLNull -> pure Nothing
     _ -> Just <$> fromSql r
 
+instance FromSql Aeson.Value where
+  fromSql r = case r of
+    MySQLText t -> case Aeson.eitherDecodeStrict $ Text.encodeUtf8 t
+                   of Right val -> Right val
+                      Left err -> Left $ ConversionError $ Text.pack err
+    _ -> Left $ TypeError r "Value"
+  
 instance ToSql Int where
   toSqlValue = MySQLInt64 . fromIntegral
 
@@ -816,3 +825,5 @@ instance ToSql a => ToSql (Maybe a) where
 instance ToSql Bool where
   toSqlValue = MySQLInt8U . fromIntegral . fromEnum
 
+instance ToSql Aeson.Value where
+  toSqlValue = MySQLText . LazyText.toStrict . Aeson.encodeToLazyText
