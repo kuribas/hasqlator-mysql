@@ -211,9 +211,9 @@ pprTableInfo name ti =
   LazyText.unlines $ ((name <> " = ") : ) $
   map ("  " <>) $ LazyText.lines $ pShowNoColor ti
 
-columnTHType :: ColumnInfo -> Q Type
-columnTHType ColumnInfo{ columnType, columnNullable}
-  | columnNullable = [t| Maybe $(tp) |]
+columnTHType :: Bool -> ColumnInfo -> Q Type
+columnTHType ignoreMaybe ColumnInfo{ columnType, columnNullable}
+  | columnNullable && not ignoreMaybe = [t| Maybe $(tp) |]
   | otherwise = tp
   where tp = case columnType of
           TinyIntColumn _  -> [t| Int |]
@@ -299,7 +299,7 @@ makeField props dbName ci@ColumnInfo{columnTableName,
                  $(if columnNullable
                     then promotedT 'T.Nullable
                     else promotedT 'T.NotNull)
-                 $(columnTHType ci)
+                 $(columnTHType True ci)
                |]
            , valD (varP $ mkName $ fieldNameModifier props fieldName)
              (normalB [e| T.Field
@@ -353,7 +353,7 @@ fieldInstance props ci@ColumnInfo{columnName,
         Text.unpack columnName)
       $(litT $ strTyLit $ Text.unpack columnTableName)
       $(promotedT $ if columnNullable then 'T.Nullable else 'T.NotNull)
-      $(columnTHType ci)
+      $(columnTHType True ci)
       |]
   [valD (varP $ mkName $ fieldNameModifier props fieldName)
              (normalB [e| T.Field
@@ -371,14 +371,14 @@ insertorType props ti =
   (mkName typeName)
   []
   Nothing
-  [recC (mkName typeName) $ map columnTypes (tableColumns ti) ]
+  [recC (mkName typeName) $ map columnTypes $ tableColumns ti ]
   []
-  where typeName = insertorTypeModifier props (Text.unpack $ tableName ti)
+  where typeName = insertorTypeModifier props $ Text.unpack $ tableName ti
         columnTypes ci =
-          ( (mkName $ insertorFieldModifier props $ Text.unpack $ columnName ci)
+          ( mkName $ insertorFieldModifier props $ Text.unpack $ columnName ci
           , Bang NoSourceUnpackedness NoSourceStrictness
           ,
-          ) <$> columnTHType ci
+          ) <$> columnTHType False ci
     
   
 insertor :: Properties -> Name -> TableInfo -> Q [Dec]
@@ -404,7 +404,7 @@ insertor props dbName ti =
     insertorField ci = [e| $(sigE
                              (varE $ mkName $ insertorFieldModifier props $
                               Text.unpack $ columnName ci)
-                             [t| $(conT insertorTypeName) -> $(columnTHType ci)  |])
+                             [t| $(conT insertorTypeName) -> $(columnTHType False ci)  |])
                            `T.into`
                            $(varE $ mkName $ fieldNameModifier props $
                              Text.unpack $ columnName ci) |]
