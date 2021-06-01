@@ -557,7 +557,7 @@ leftJoinSubQuery :: (Generic inExprs,
                      SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
                  => Query database inExprs
                  -> (outExprs -> Expression nullable Bool)
-            -> Query database outExprs
+                 -> Query database outExprs
 leftJoinSubQuery sq condition = Query $ do
   (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq
   conditionBuilder <- runExpression $ condition outExpr

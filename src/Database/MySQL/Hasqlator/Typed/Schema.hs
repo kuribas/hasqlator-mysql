@@ -6,8 +6,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 module Database.MySQL.Hasqlator.Typed.Schema
-  (TableInfo(..), fetchTableInfo, pprTableInfo, Properties(..),
-   defaultProperties, makeDBTypes) where
+  (TableInfo(..), ColumnInfo(..), fetchTableInfo, Sign(..), ColumnType(..),
+   pprTableInfo, Properties(..), defaultProperties, makeDBTypes) where
 import Database.MySQL.Hasqlator
 import qualified Database.MySQL.Hasqlator.Typed as T
 import Database.MySQL.Base(MySQLConn)
