@@ -239,14 +239,14 @@ columnTHType ignoreMaybe ColumnInfo{ columnType, columnNullable}
           JsonColumn -> [t| Value |]
 
 data Properties = Properties
-  { fieldNameModifier :: String -> String
-  , tableNameModifier :: String -> String
+  { fieldNameModifier :: ColumnInfo -> String
+  , tableNameModifier :: TableInfo -> String
   , classNameModifier :: String -> String
   , includeInsertor :: Bool
   , includeSchema :: Bool
-  , insertorTypeModifier :: String -> String
-  , insertorNameModifier :: String -> String
-  , insertorFieldModifier :: String -> String
+  , insertorTypeModifier :: TableInfo -> String
+  , insertorNameModifier :: TableInfo -> String
+  , insertorFieldModifier :: ColumnInfo -> String
   }
 
 
@@ -271,17 +271,25 @@ removeUnderscore [] = []
 
 defaultProperties :: Properties
 defaultProperties = Properties
-  { fieldNameModifier = \n ->
-      downcase n <> (if downcase n `elem` reserved then "_" else mempty)
-  , tableNameModifier = \n ->
-      downcase n <> (if downcase n `elem` reserved then "_" else mempty) <> "_tbl"
-  , classNameModifier = \n -> "Has_" <> n <> "_Field"
+  { fieldNameModifier = \ColumnInfo{columnName} ->
+      let n = Text.unpack columnName
+      in downcase n <> (if downcase n `elem` reserved then "_" else mempty)
+  , tableNameModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in downcase n <>
+         (if downcase n `elem` reserved then "_" else mempty) <> "_tbl"
+  , classNameModifier = \n -> "Has_" <> n <> "_field"
   , includeInsertor = True
   , includeSchema = True
-  , insertorTypeModifier = \n -> removeUnderscore (upcase n) <> "Fields"
-  , insertorNameModifier = \n ->
-      downcase (removeUnderscore n) <> "Insertor"
-  , insertorFieldModifier = \n -> downcase n <> "_field"
+  , insertorTypeModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in removeUnderscore (upcase n) <> "Fields"
+  , insertorNameModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in downcase (removeUnderscore n) <> "Insertor"
+  , insertorFieldModifier = \ColumnInfo{columnName} ->
+      let n = Text.unpack columnName
+      in downcase n <> "_field"
   }
     where reserved :: [String]
           reserved = ["id", "class", "data", "type", "foreign", "import",
@@ -305,7 +313,7 @@ makeField :: Properties -> Name -> ColumnInfo -> Q [Dec]
 makeField props dbName ci@ColumnInfo{columnName
                                     ,columnNullable} =
   sequence [ sigD
-             (mkName $ fieldNameModifier props fieldName)
+             (mkName $ fieldNameModifier props ci)
              [t| T.Field
                  $(litT $ strTyLit tableName)
                  $(conT dbName)
@@ -314,37 +322,37 @@ makeField props dbName ci@ColumnInfo{columnName
                     else promotedT 'T.NotNull)
                  $(columnTHType True ci)
                |]
-           , valD (varP $ mkName $ fieldNameModifier props fieldName)
+           , valD (varP $ mkName $ fieldNameModifier props ci)
              (normalB [e| T.Field
                           $(litE $ stringL tableName)
                           $(litE $ stringL fieldName)
                         |])
              []
            ]
-  where fieldName = Text.unpack columnName
-        tableName = getColumnTableName props ci
+  where tableName = getColumnTableName props ci
+        fieldName = Text.unpack columnName
         
 makeTable :: Properties -> Name -> TableInfo -> Q [Dec]
 makeTable Properties{tableNameModifier, includeSchema}
           dbname
-          TableInfo{tableSchema, tableName} =
+          ti@TableInfo{tableName, tableSchema} =
   sequence [ sigD
-             (mkName $ tableNameModifier tableString)
+             (mkName $ tableNameModifier ti)
              [t| T.Table
                  $(litT $ strTyLit tableString)
                  $(conT dbname)
                |]
-           , valD (varP $ mkName $ tableNameModifier tableString)
+           , valD (varP $ mkName $ tableNameModifier ti)
              (normalB [e| T.Table
-                          $(conE 'Nothing)
+                          $(if includeSchema
+                            then (appE (conE 'Just)
+                                   (litE $ stringL $ Text.unpack tableSchema))
+                            else conE 'Nothing)
                           $(litE $ stringL tableString)
                         |])
              []
            ]
-  where tableString
-          | includeSchema = Text.unpack tableSchema <> "." <>
-                            Text.unpack tableName
-          | otherwise = Text.unpack tableName
+  where tableString = Text.unpack tableName
            
 fieldClass :: Properties -> Name -> String -> Q Dec
 fieldClass props dbName columnName =
@@ -366,13 +374,12 @@ fieldInstance :: Properties -> ColumnInfo -> Q Dec
 fieldInstance props ci@ColumnInfo{columnName,
                                   columnNullable} =
   instanceD (pure [])
-  [t| $(conT $ mkName $ classNameModifier props $ fieldNameModifier props $
-        Text.unpack columnName)
+  [t| $(conT $ mkName $ classNameModifier props $ fieldNameModifier props ci)
       $(litT $ strTyLit tableName)
       $(promotedT $ if columnNullable then 'T.Nullable else 'T.NotNull)
       $(columnTHType True ci)
       |]
-  [valD (varP $ mkName $ fieldNameModifier props fieldName)
+  [valD (varP $ mkName $ fieldNameModifier props ci)
              (normalB [e| T.Field
                           $(litE $ stringL tableName)
                           $(litE $ stringL fieldName)
@@ -390,9 +397,9 @@ insertorType props ti =
   Nothing
   [recC (mkName typeName) $ map columnTypes $ tableColumns ti ]
   []
-  where typeName = insertorTypeModifier props $ getTableName props ti
+  where typeName = insertorTypeModifier props ti
         columnTypes ci =
-          ( mkName $ insertorFieldModifier props $ Text.unpack $ columnName ci
+          ( mkName $ insertorFieldModifier props ci
           , Bang NoSourceUnpackedness NoSourceStrictness
           ,
           ) <$> columnTHType False ci
@@ -412,18 +419,15 @@ insertor props dbName ti =
              []
            ]
   where 
-    insertorName = mkName $ insertorNameModifier props $ getTableName props ti
-    insertorTypeName = mkName $ insertorTypeModifier props $
-                       getTableName props ti 
+    insertorName = mkName $ insertorNameModifier props ti
+    insertorTypeName = mkName $ insertorTypeModifier props ti 
     insertorField :: ColumnInfo -> Q Exp
     insertorField ci = [e| $(sigE
-                             (varE $ mkName $ insertorFieldModifier props $
-                              Text.unpack $ columnName ci)
+                             (varE $ mkName $ insertorFieldModifier props ci)
                              [t| $(conT insertorTypeName) ->
                                  $(columnTHType False ci)  |])
                            `T.into`
-                           $(varE $ mkName $ fieldNameModifier props $
-                             Text.unpack $ columnName ci) |]
+                           $(varE $ mkName $ fieldNameModifier props ci) |]
 
 
 makeDBTypes :: Properties -> Name -> [TableInfo] -> Q [Dec]
@@ -446,7 +450,7 @@ makeDBTypes props dbName tis =
       ]
 
     getFieldName :: ColumnInfo -> String
-    getFieldName ti = fieldNameModifier props $ Text.unpack $ columnName ti
+    getFieldName ti = fieldNameModifier props ti
 
     duplicateCols :: Set.Set String
     duplicateCols = Set.fromList $ map fst $ filter ((> 1) . snd) $ Map.toList $
