@@ -333,13 +333,13 @@ makeField props dbName ci@ColumnInfo{columnName
         fieldName = Text.unpack columnName
         
 makeTable :: Properties -> Name -> TableInfo -> Q [Dec]
-makeTable Properties{tableNameModifier, includeSchema}
+makeTable props@Properties{tableNameModifier, includeSchema}
           dbname
           ti@TableInfo{tableName, tableSchema} =
   sequence [ sigD
              (mkName $ tableNameModifier ti)
              [t| T.Table
-                 $(litT $ strTyLit tableString)
+                 $(litT $ strTyLit $ getTableName props ti)
                  $(conT dbname)
                |]
            , valD (varP $ mkName $ tableNameModifier ti)
