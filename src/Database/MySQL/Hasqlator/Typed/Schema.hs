@@ -290,8 +290,16 @@ defaultProperties = Properties
 getColumnTableName :: Properties -> ColumnInfo -> String
 getColumnTableName Properties{includeSchema}
                    ColumnInfo{columnTableSchema, columnTableName}
-  | includeSchema = Text.unpack columnTableSchema <> Text.unpack columnTableName
+  | includeSchema = Text.unpack columnTableSchema <> "." <>
+                    Text.unpack columnTableName
   | otherwise = Text.unpack columnTableName
+          
+getTableName :: Properties -> TableInfo -> String
+getTableName Properties{includeSchema}
+             TableInfo{tableSchema, tableName}
+  | includeSchema = Text.unpack tableSchema <> "." <>
+                    Text.unpack tableName
+  | otherwise = Text.unpack tableName
           
 makeField :: Properties -> Name -> ColumnInfo -> Q [Dec]
 makeField props dbName ci@ColumnInfo{columnName
@@ -334,7 +342,8 @@ makeTable Properties{tableNameModifier, includeSchema}
              []
            ]
   where tableString
-          | includeSchema = Text.unpack tableSchema <> Text.unpack tableName
+          | includeSchema = Text.unpack tableSchema <> "." <>
+                            Text.unpack tableName
           | otherwise = Text.unpack tableName
            
 fieldClass :: Properties -> Name -> String -> Q Dec
@@ -381,7 +390,7 @@ insertorType props ti =
   Nothing
   [recC (mkName typeName) $ map columnTypes $ tableColumns ti ]
   []
-  where typeName = insertorTypeModifier props $ Text.unpack $ tableName ti
+  where typeName = insertorTypeModifier props $ getTableName props ti
         columnTypes ci =
           ( mkName $ insertorFieldModifier props $ Text.unpack $ columnName ci
           , Bang NoSourceUnpackedness NoSourceStrictness
@@ -393,7 +402,7 @@ insertor props dbName ti =
   sequence [ sigD
              insertorName
              [t| T.Insertor
-                 $(litT $ strTyLit $ Text.unpack $ tableName ti)
+                 $(litT $ strTyLit $ getTableName props ti)
                  $(conT dbName)
                  $(conT insertorTypeName)
                  |]
@@ -403,15 +412,15 @@ insertor props dbName ti =
              []
            ]
   where 
-    insertorName = mkName $ insertorNameModifier props $ Text.unpack $
-                   tableName ti
-    insertorTypeName = mkName $ insertorTypeModifier props $ Text.unpack $
-                       tableName ti
+    insertorName = mkName $ insertorNameModifier props $ getTableName props ti
+    insertorTypeName = mkName $ insertorTypeModifier props $
+                       getTableName props ti 
     insertorField :: ColumnInfo -> Q Exp
     insertorField ci = [e| $(sigE
                              (varE $ mkName $ insertorFieldModifier props $
                               Text.unpack $ columnName ci)
-                             [t| $(conT insertorTypeName) -> $(columnTHType False ci)  |])
+                             [t| $(conT insertorTypeName) ->
+                                 $(columnTHType False ci)  |])
                            `T.into`
                            $(varE $ mkName $ fieldNameModifier props $
                              Text.unpack $ columnName ci) |]
