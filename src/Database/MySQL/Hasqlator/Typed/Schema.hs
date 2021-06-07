@@ -24,11 +24,9 @@ import Data.Word
 import Data.Int
 import Data.Scientific
 import Data.Time
-import Control.Monad
 import qualified Data.ByteString as StrictBS
 import Data.Aeson(Value)
 import Data.Char
-import Data.List
 import GHC.TypeLits(Symbol)
 import Text.Pretty.Simple
 
@@ -245,6 +243,7 @@ data Properties = Properties
   , tableNameModifier :: String -> String
   , classNameModifier :: String -> String
   , includeInsertor :: Bool
+  , includeSchema :: Bool
   , insertorTypeModifier :: String -> String
   , insertorNameModifier :: String -> String
   , insertorFieldModifier :: String -> String
@@ -278,6 +277,7 @@ defaultProperties = Properties
       downcase n <> (if downcase n `elem` reserved then "_" else mempty) <> "_tbl"
   , classNameModifier = \n -> "Has_" <> n <> "_Field"
   , includeInsertor = True
+  , includeSchema = True
   , insertorTypeModifier = \n -> removeUnderscore (upcase n) <> "Fields"
   , insertorNameModifier = \n ->
       downcase (removeUnderscore n) <> "Insertor"
@@ -286,11 +286,16 @@ defaultProperties = Properties
     where reserved :: [String]
           reserved = ["id", "class", "data", "type", "foreign", "import",
                       "default", "case"]
-    
+
+getColumnTableName :: Properties -> ColumnInfo -> String
+getColumnTableName Properties{includeSchema}
+                   ColumnInfo{columnTableSchema, columnTableName}
+  | includeSchema = Text.unpack columnTableSchema <> Text.unpack columnTableName
+  | otherwise = Text.unpack columnTableName
+          
 makeField :: Properties -> Name -> ColumnInfo -> Q [Dec]
-makeField props dbName ci@ColumnInfo{columnTableName,
-                                     columnName,
-                                     columnNullable} =
+makeField props dbName ci@ColumnInfo{columnName
+                                    ,columnNullable} =
   sequence [ sigD
              (mkName $ fieldNameModifier props fieldName)
              [t| T.Field
@@ -309,24 +314,28 @@ makeField props dbName ci@ColumnInfo{columnTableName,
              []
            ]
   where fieldName = Text.unpack columnName
-        tableName = Text.unpack columnTableName
+        tableName = getColumnTableName props ci
         
 makeTable :: Properties -> Name -> TableInfo -> Q [Dec]
-makeTable props dbname TableInfo{tableName} =
+makeTable Properties{tableNameModifier, includeSchema}
+          dbname
+          TableInfo{tableSchema, tableName} =
   sequence [ sigD
-             (mkName $ tableNameModifier props tableString)
+             (mkName $ tableNameModifier tableString)
              [t| T.Table
                  $(litT $ strTyLit tableString)
                  $(conT dbname)
                |]
-           , valD (varP $ mkName $ tableNameModifier props tableString)
+           , valD (varP $ mkName $ tableNameModifier tableString)
              (normalB [e| T.Table
                           $(conE 'Nothing)
                           $(litE $ stringL tableString)
                         |])
              []
            ]
-  where tableString = Text.unpack tableName
+  where tableString
+          | includeSchema = Text.unpack tableSchema <> Text.unpack tableName
+          | otherwise = Text.unpack tableName
            
 fieldClass :: Properties -> Name -> String -> Q Dec
 fieldClass props dbName columnName =
@@ -346,12 +355,11 @@ fieldClass props dbName columnName =
 
 fieldInstance :: Properties -> ColumnInfo -> Q Dec
 fieldInstance props ci@ColumnInfo{columnName,
-                                  columnNullable,
-                                  columnTableName} =
+                                  columnNullable} =
   instanceD (pure [])
   [t| $(conT $ mkName $ classNameModifier props $ fieldNameModifier props $
         Text.unpack columnName)
-      $(litT $ strTyLit $ Text.unpack columnTableName)
+      $(litT $ strTyLit tableName)
       $(promotedT $ if columnNullable then 'T.Nullable else 'T.NotNull)
       $(columnTHType True ci)
       |]
@@ -362,7 +370,7 @@ fieldInstance props ci@ColumnInfo{columnName,
                         |])
              []]
     where fieldName = Text.unpack columnName
-          tableName = Text.unpack columnTableName
+          tableName = getColumnTableName props ci
 
   
 insertorType :: Properties -> TableInfo -> Q Dec
@@ -379,8 +387,7 @@ insertorType props ti =
           , Bang NoSourceUnpackedness NoSourceStrictness
           ,
           ) <$> columnTHType False ci
-    
-  
+
 insertor :: Properties -> Name -> TableInfo -> Q [Dec]
 insertor props dbName ti =
   sequence [ sigD
