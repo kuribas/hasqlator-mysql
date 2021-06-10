@@ -7,7 +7,9 @@
 {-# LANGUAGE TupleSections #-}
 module Database.MySQL.Hasqlator.Typed.Schema
   (TableInfo(..), ColumnInfo(..), fetchTableInfo, Sign(..), ColumnType(..),
-   pprTableInfo, Properties(..), defaultProperties, makeDBTypes) where
+   pprTableInfo, Properties(..), defaultProperties, makeFields,
+   smartUpcase, smartDowncase,
+   makeRecords, makeSelectors, makeInsertors) where
 import Database.MySQL.Hasqlator
 import qualified Database.MySQL.Hasqlator.Typed as T
 import Database.MySQL.Base(MySQLConn)
@@ -242,26 +244,27 @@ data Properties = Properties
   { fieldNameModifier :: ColumnInfo -> String
   , tableNameModifier :: TableInfo -> String
   , classNameModifier :: String -> String
-  , includeInsertor :: Bool
   , includeSchema :: Bool
   , insertorTypeModifier :: TableInfo -> String
   , insertorNameModifier :: TableInfo -> String
+  , selectorNameModifier :: TableInfo -> String
+  , fieldsQualifier :: String
   , insertorFieldModifier :: ColumnInfo -> String
   }
 
 
-downcase :: String -> String
-downcase (c:cs)
+smartDowncase :: String -> String
+smartDowncase (c:cs)
   | isAlpha c = let (l, r) = span isUpper (c:cs)
                 in map toLower l ++ r
   | otherwise = '_' : c : cs
-downcase "" = ""
+smartDowncase "" = ""
 
-upcase :: String -> String
-upcase (c:cs)
+smartUpcase :: String -> String
+smartUpcase (c:cs)
   | isAlpha c = toUpper c : cs
   | otherwise = '_' : c : cs
-upcase "" = ""
+smartUpcase "" = ""
 
 removeUnderscore :: String -> String
 removeUnderscore ('_':c:cs)
@@ -273,23 +276,26 @@ defaultProperties :: Properties
 defaultProperties = Properties
   { fieldNameModifier = \ColumnInfo{columnName} ->
       let n = Text.unpack columnName
-      in downcase n <> (if downcase n `elem` reserved then "_" else mempty)
+      in smartDowncase n <> (if smartDowncase n `elem` reserved then "_" else mempty)
   , tableNameModifier = \TableInfo{tableName} ->
       let n = Text.unpack tableName
-      in downcase n <>
-         (if downcase n `elem` reserved then "_" else mempty) <> "_tbl"
+      in smartDowncase n <>
+         (if smartDowncase n `elem` reserved then "_" else mempty) <> "_tbl"
   , classNameModifier = \n -> "Has_" <> n <> "_field"
-  , includeInsertor = True
   , includeSchema = True
   , insertorTypeModifier = \TableInfo{tableName} ->
       let n = Text.unpack tableName
-      in removeUnderscore (upcase n) <> "Fields"
+      in removeUnderscore (smartUpcase n) <> "Fields"
   , insertorNameModifier = \TableInfo{tableName} ->
       let n = Text.unpack tableName
-      in downcase (removeUnderscore n) <> "Insertor"
+      in smartDowncase (removeUnderscore n) <> "Insertor"
+  , selectorNameModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in n <> "_sel"
+  , fieldsQualifier = ""
   , insertorFieldModifier = \ColumnInfo{columnName} ->
       let n = Text.unpack columnName
-      in downcase n <> "_field"
+      in smartDowncase n <> "_field"
   }
     where reserved :: [String]
           reserved = ["id", "class", "data", "type", "foreign", "import",
@@ -345,8 +351,8 @@ makeTable props@Properties{tableNameModifier, includeSchema}
            , valD (varP $ mkName $ tableNameModifier ti)
              (normalB [e| T.Table
                           $(if includeSchema
-                            then (appE (conE 'Just)
-                                   (litE $ stringL $ Text.unpack tableSchema))
+                            then appE (conE 'Just) $
+                                 litE $ stringL $ Text.unpack tableSchema
                             else conE 'Nothing)
                           $(litE $ stringL tableString)
                         |])
@@ -427,11 +433,48 @@ insertor props dbName ti =
                              [t| $(conT insertorTypeName) ->
                                  $(columnTHType False ci)  |])
                            `T.into`
-                           $(varE $ mkName $ fieldNameModifier props ci) |]
+                           $(varE $ mkName $
+                             fieldsQualifier props <>
+                             fieldNameModifier props ci) |]
 
+makeSelector :: Properties -> Name -> TableInfo -> Q [Dec]
+makeSelector props dbName ti =
+  sequence [ sigD
+             selectorName
+             [t| T.Tbl
+                 $(litT $ strTyLit $ getTableName props ti)
+                 $(conT dbName)
+                 'T.InnerJoined
+                 ->
+                 T.Selector
+                 $(conT insertorTypeName)
+                 |]
+           , funD selectorName
+             [ do alias <- newName "alias"
+                  clause [conP 'T.Tbl [varP alias]]
+                    (normalB $ tableSelector alias)
+                    []
+             ]]
 
-makeDBTypes :: Properties -> Name -> [TableInfo] -> Q [Dec]
-makeDBTypes props dbName tis =
+  where selectorName = mkName $ selectorNameModifier props ti
+        insertorTypeName = mkName $ insertorTypeModifier props ti
+        tableSelector alias =
+          case map (fieldSelector alias) $ tableColumns ti of
+            [] -> [e| pure $(conE $ mkName $ insertorTypeModifier props ti) |]
+            (sel1:sels) -> foldl
+                           (\s1 s2 -> [e| $(s1) <*> $(s2) |])
+                           [e| $(conE $ mkName $ insertorTypeModifier props ti)
+                               <$> $(sel1) |]
+                           sels
+        fieldSelector alias ci =
+          [e| $(if columnNullable ci then [e| T.selMaybe |] else [e| T.sel |])
+              ($(varE alias) $(varE $ mkName $
+                               fieldsQualifier props <>
+                               fieldNameModifier props ci))
+            |]
+
+makeFields :: Properties -> Name -> [TableInfo] -> Q [Dec]
+makeFields props dbName tis =
   liftA2 (++) classDecs $ concat <$> traverse tableDecs tis
   where
     classDecs :: Q [Dec]
@@ -444,9 +487,6 @@ makeDBTypes props dbName tis =
         filter (not . duplicateCol . getFieldName) $ tableColumns ti
       , traverse (fieldInstance props) $ filter (duplicateCol . getFieldName) $
         tableColumns ti
-      , if includeInsertor props
-        then (:) <$> insertorType props ti <*> insertor props dbName ti
-        else pure mempty
       ]
 
     getFieldName :: ColumnInfo -> String
@@ -459,3 +499,14 @@ makeDBTypes props dbName tis =
                     tis >>= tableColumns
     duplicateCol :: String -> Bool
     duplicateCol c = c `Set.member` duplicateCols
+
+makeRecords :: Properties -> [TableInfo] -> Q [Dec]
+makeRecords props = traverse (insertorType props)
+
+makeInsertors :: Properties -> Name -> [TableInfo] -> Q [Dec]
+makeInsertors props dbName tis =
+  concat <$> traverse (insertor props dbName) tis
+
+makeSelectors :: Properties -> Name -> [TableInfo] -> Q [Dec]
+makeSelectors props dbName tis =
+  concat <$> traverse (makeSelector props dbName) tis

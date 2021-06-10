@@ -17,19 +17,19 @@
 
 module Database.MySQL.Hasqlator.Typed
   ( -- * Database Types
-    Table(..), Field(..), Tbl(..), (@@), Nullable (..),
+    Table(..), Field(..), Tbl(..), (@@), Nullable (..), JoinType (..),
     
     
     -- * Querying
     Query, 
 
     -- * Selectors
-    H.Selector, sel, selMaybe,
+    Selector, sel, selMaybe,
 
     -- * Expressions
     Expression, SomeExpression, someExpr, Operator, 
     arg, argMaybe, nullable, cast, unsafeCast,
-    op, fun1, fun2, fun3, (>.), (<.), (>=.), (<=.), (&&.), (||.),
+    op, fun1, fun2, fun3, (=.), (/=.), (>.), (<.), (>=.), (<=.), (&&.), (||.),
     substr, true_, false_,
 
     -- * Clauses
@@ -41,7 +41,7 @@ module Database.MySQL.Hasqlator.Typed
     lensInto, insertOne, exprInto, Into,
     
     -- * imported from Database.MySQL.Hasqlator
-    H.Getter, H.ToSql, H.FromSql, subQueryExpr
+    H.Getter, H.ToSql, H.FromSql, subQueryExpr, H.Command
   )
 where
 import Data.Text (Text)
@@ -254,7 +254,9 @@ substr :: Expression nullable Text -> Expression nullable Int
        -> Expression nullable Text
 substr = fun3 H.substr
 
-(>.), (<.), (>=.), (<=.) :: H.ToSql a => Operator a a Bool
+(=.), (/=.), (>.), (<.), (>=.), (<=.) :: H.ToSql a => Operator a a Bool
+(=.) = op (H.=.)
+(/=.) = op (H./=.)
 (>.) = op (H.>.)
 (<.) = op (H.<.)
 (>=.) = op (H.>=.)
@@ -622,3 +624,18 @@ insertSelect (Table schema tbl) (Query query) =
   where (intos, ClauseState clauses _) =
           runState (query >>= traverse runInto) emptyClauseState
 
+
+{- TODO:
+
+DML values:
+
+values :: Insertable database a inExpres outExprs =>
+  inExprs -> [a] -> Query database outExprs
+
+specialized:
+
+(Person -> Int, Person -> Maybe String) ->
+  [Person] -> 
+  Query database (Expression nullable Int, Expression 'Nullable String)
+
+-}
