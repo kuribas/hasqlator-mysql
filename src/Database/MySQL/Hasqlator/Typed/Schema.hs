@@ -441,7 +441,7 @@ makeSelector :: Properties -> Name -> TableInfo -> Q [Dec]
 makeSelector props dbName ti =
   sequence [ sigD
              selectorName
-             [t| T.Tbl
+             [t| T.Alias
                  $(litT $ strTyLit $ getTableName props ti)
                  $(conT dbName)
                  'T.InnerJoined
@@ -451,7 +451,7 @@ makeSelector props dbName ti =
                  |]
            , funD selectorName
              [ do alias <- newName "alias"
-                  clause [conP 'T.Tbl [varP alias]]
+                  clause [conP 'T.Alias [varP alias]]
                     (normalB $ tableSelector alias)
                     []
              ]]

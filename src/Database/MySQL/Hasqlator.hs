@@ -44,16 +44,20 @@ module Database.MySQL.Hasqlator
     localTimeSel, timeOfDaySel, diffTimeSel, daySel, byteStringSel,
     textSel,
     -- ** other selectors
-    values, values_,
+    rawValues, rawValues_,
 
     -- * Expressions
     subQuery,
-    arg, fun, op, (>.), (<.), (>=.), (<=.), (+.), (-.), (*.), (/.), (=.), (++.),
-    (/=.), (&&.), (||.), abs_, negate_, signum_, sum_, rawSql, substr, in_,
+    arg, fun, op, isNull, isNotNull, (>.), (<.), (>=.), (<=.), (+.), (-.), (*.),
+    (/.), (=.), (++.), (/=.), (&&.), (||.), abs_, negate_, signum_, sum_,
+    rawSql, substr, in_, values,
 
     -- * Insertion
-    Insertor, insertValues, insertSelect, insertData, skipInsert, into, Getter,
-    lensInto, insertOne, ToSql,
+    Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
+    skipInsert, into, exprInto, Getter, lensInto, insertOne, ToSql,
+
+    -- * Updates
+    update,
     
     -- * Rendering Queries
     renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder,
@@ -238,38 +242,44 @@ instance Monoid a => Monoid (Selector a) where
   mempty = pure mempty
 
 data Query a = Query (Selector a) QueryBody
-data Command = Update QueryBuilder [(QueryBuilder, QueryBuilder)] QueryBody
+data Command = Update [QueryBuilder] [(QueryBuilder, QueryBuilder)] QueryBody
              | InsertSelect QueryBuilder [QueryBuilder] [QueryBuilder] QueryBody
-             | forall a.InsertValues QueryBuilder (Insertor a) [a]
+             | forall a.InsertValues QueryBuilder (Insertor a)
+               (Maybe [(QueryBuilder, QueryBuilder)]) [a]
              | forall a.Delete (Query a)
 
 -- | An @`Insertor` a@ provides a mapping of parts of values of type
 -- @a@ to columns in the database.  Insertors can be combined using `<>`.
-data Insertor a = Insertor [Text] (a -> [MySQLValue])
+data Insertor a = Insertor [Text] (a -> [QueryBuilder])
 
 data Join = Join JoinType [QueryBuilder] [QueryBuilder]
 data JoinType = InnerJoin | LeftJoin | RightJoin | OuterJoin
 
+pairQuery :: (QueryBuilder, QueryBuilder) -> QueryBuilder
+pairQuery (a, b) = a <> " = " <> b
+
 instance ToQueryBuilder Command where
-  toQueryBuilder (Update table setting body) =
-    let pairQuery (a, b) = a <> " = " <> b
-    in unwords
-        [ "UPDATE", table
-       , "SET", commaSep $ map pairQuery setting
-       , toQueryBuilder body
-       ] 
+  toQueryBuilder (Update tables setting body) =
+    unwords
+    [ "UPDATE", commaSep tables
+    , "SET", commaSep $ map pairQuery setting
+    , toQueryBuilder body
+    ] 
     
-  toQueryBuilder (InsertValues (QueryBuilder table _ _)
-                  (Insertor cols convert) values__) =
-    let builder, valuesB :: Builder
-        valuesB = commaSep $
-                  map (parentized . commaSep . map mysqlValueBuilder . convert)
+  toQueryBuilder (InsertValues table (Insertor cols convert) updates values__) =
+    let valuesB = commaSep $
+                  map (parentized . commaSep . convert)
                   values__
-        builder = unwords [ "INSERT INTO", table
-                          , parentized $ commaSep $
-                            map (Builder.byteString . Text.encodeUtf8) cols
-                          , "VALUES", valuesB]
-    in QueryBuilder builder builder DList.empty
+        insertStmt = [ "INSERT INTO", table
+                  , parentized $ commaSep $
+                    map rawSql cols
+                  , "VALUES", valuesB]
+    in unwords $ insertStmt ++
+       foldMap (\setting ->
+                   [ "ON DUPLICATE KEY UPDATE"
+                   , commaSep (map pairQuery setting)])
+       updates
+       
   toQueryBuilder (InsertSelect table cols rows queryBody) =
     unwords
     [ "INSERT INTO", table
@@ -435,6 +445,12 @@ op name e1 e2 = parentized $ e1 <> " " <> fromText name <> " " <> e2
 substr :: QueryBuilder -> QueryBuilder -> QueryBuilder -> QueryBuilder
 substr field start end = fun "substr" [field, start, end]
 
+infixr 3 &&., ||.
+infix 4 <., >., >=., <=., =., /=.
+infixr 5 ++.
+infixl 6 +., -.
+infixl 7 *., /.
+  
 (>.), (<.), (>=.), (<=.), (+.), (-.), (/.), (*.), (=.), (/=.), (++.), (&&.),
   (||.)
   :: QueryBuilder -> QueryBuilder -> QueryBuilder
@@ -458,10 +474,22 @@ signum_ x = fun "sign" [x]
 negate_ x = fun "-" [x]
 sum_ x = fun "sum" [x]
 
+values :: QueryBuilder -> QueryBuilder
+values x = fun "values" [x]
+
+isNull :: QueryBuilder -> QueryBuilder
+isNull e = parentized $ e <> " IS NULL"
+
+isNotNull :: QueryBuilder -> QueryBuilder
+isNotNull e = parentized $ e <> " IS NOT NULL"
+
+-- | insert an expression
+exprInto :: (a -> QueryBuilder) -> Text -> Insertor a
+exprInto f s = Insertor [s] (\t -> [f t])
 
 -- | insert a single value directly
 insertOne :: ToSql a => Text -> Insertor a
-insertOne s = Insertor [s] (\t -> [toSqlValue t])
+insertOne s = arg `exprInto` s
 
 -- | insert a datastructure
 class InsertGeneric (fields :: *) (data_ :: *) where
@@ -600,12 +628,24 @@ replaceSelect :: Selector a -> Query b -> Query a
 replaceSelect s (Query _ body) = Query s body
 
 insertValues :: QueryBuilder -> Insertor a -> [a] -> Command
-insertValues = InsertValues
+insertValues qb i = InsertValues qb i Nothing
+
+insertUpdateValues :: QueryBuilder
+                   -> Insertor a
+                   -> [(QueryBuilder, QueryBuilder)]
+                   -> [a]
+                   -> Command
+insertUpdateValues qb i u = InsertValues qb i (Just u)
 
 insertSelect :: QueryBuilder -> [QueryBuilder] -> [QueryBuilder] -> QueryClauses
              -> Command
 insertSelect table toColumns fromColumns (QueryClauses clauses) =
   InsertSelect table toColumns fromColumns $ appEndo clauses emptyQueryBody
+
+update :: [QueryBuilder] -> [(QueryBuilder, QueryBuilder)] -> QueryClauses
+       -> Command
+update tables assignments (QueryClauses clauses) =
+  Update tables assignments $ appEndo clauses emptyQueryBody
 
 -- | combinator for aliasing columns.
 as :: QueryBuilder -> QueryBuilder -> QueryBuilder
@@ -615,13 +655,13 @@ in_ :: QueryBuilder -> [QueryBuilder] -> QueryBuilder
 in_ e l = e <> " IN " <> parentized (commaSep l)
 
 -- | Read the columns directly as a `MySQLValue` type without conversion.
-values :: [QueryBuilder] -> Selector [MySQLValue]
-values cols = Selector (DList.fromList cols) $
+rawValues :: [QueryBuilder] -> Selector [MySQLValue]
+rawValues cols = Selector (DList.fromList cols) $
               state $ splitAt (length cols)
 
 -- | Ignore the content of the given columns
-values_ :: [QueryBuilder] -> Selector ()
-values_ cols = () <$ values cols
+rawValues_ :: [QueryBuilder] -> Selector ()
+rawValues_ cols = () <$ rawValues cols
   
 -- selector for any bounded integer type
 intFromSql :: forall a.(Show a, Bounded a, Integral a)
