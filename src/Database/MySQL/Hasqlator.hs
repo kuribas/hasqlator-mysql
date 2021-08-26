@@ -50,7 +50,7 @@ module Database.MySQL.Hasqlator
     subQuery,
     arg, fun, op, isNull, isNotNull, (>.), (<.), (>=.), (<=.), (+.), (-.), (*.),
     (/.), (=.), (++.), (/=.), (&&.), (||.), abs_, negate_, signum_, sum_,
-    rawSql, substr, in_, values,
+    rawSql, substr, in_, false_, true_, notIn_, values,
 
     -- * Insertion
     Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
@@ -265,7 +265,8 @@ instance ToQueryBuilder Command where
     , "SET", commaSep $ map pairQuery setting
     , toQueryBuilder body
     ] 
-    
+
+  toQueryBuilder (InsertValues _ _ _  []) = "SELECT 'nothing to insert'"
   toQueryBuilder (InsertValues table (Insertor cols convert) updates values__) =
     let valuesB = commaSep $
                   map (parentized . commaSep . convert)
@@ -279,7 +280,7 @@ instance ToQueryBuilder Command where
                    [ "ON DUPLICATE KEY UPDATE"
                    , commaSep (map pairQuery setting)])
        updates
-       
+
   toQueryBuilder (InsertSelect table cols rows queryBody) =
     unwords
     [ "INSERT INTO", table
@@ -474,6 +475,10 @@ signum_ x = fun "sign" [x]
 negate_ x = fun "-" [x]
 sum_ x = fun "sum" [x]
 
+false_, true_ :: QueryBuilder
+false_ = rawSql "false"
+true_ = rawSql "true"
+
 values :: QueryBuilder -> QueryBuilder
 values x = fun "values" [x]
 
@@ -652,7 +657,12 @@ as :: QueryBuilder -> QueryBuilder -> QueryBuilder
 as e1 e2 = e1 <> " AS " <> e2
 
 in_ :: QueryBuilder -> [QueryBuilder] -> QueryBuilder
+in_ _ [] = false_
 in_ e l = e <> " IN " <> parentized (commaSep l)
+
+notIn_ :: QueryBuilder -> [QueryBuilder] -> QueryBuilder
+notIn_ _ [] = true_
+notIn_ e l = e <> " NOT IN " <> parentized (commaSep l)
 
 -- | Read the columns directly as a `MySQLValue` type without conversion.
 rawValues :: [QueryBuilder] -> Selector [MySQLValue]

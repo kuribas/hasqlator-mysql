@@ -28,7 +28,7 @@ module Database.MySQL.Hasqlator.Typed
     Expression, SomeExpression, someExpr, Operator, 
     arg, argMaybe, isNull, isNotNull, nullable, notNull, orNull, unlessNull,
     cast, unsafeCast, op, fun1, fun2, fun3, (=.), (/=.), (>.), (<.), (>=.),
-    (<=.), (&&.), (||.), substr, true_, false_,
+    (<=.), (&&.), (||.), substr, true_, false_, in_, notIn_, 
     
     -- * Clauses
     from, fromSubQuery, innerJoin, leftJoin, joinSubQuery, leftJoinSubQuery,
@@ -37,7 +37,8 @@ module Database.MySQL.Hasqlator.Typed
     -- * Insertion
     Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
     skipInsert, into,
-    lensInto, insertOne, exprInto, Into,
+    lensInto, maybeLensInto, opticInto, maybeOpticInto, insertOne, exprInto,
+    Into,
 
     -- * Update
     Updator(..), update,
@@ -67,6 +68,7 @@ import GHC.Generics hiding (from, Selector)
 import qualified Database.MySQL.Hasqlator as H
 import Data.Proxy
 import qualified Database.MySQL.Base as MySQL
+import Optics.Core hiding (lens)
 
 data Nullable = Nullable | NotNull
 data JoinType = LeftJoined | InnerJoined
@@ -178,12 +180,12 @@ executeQuery conn query = H.executeQuery conn (untypeQuery query)
 (@@) = getTableAlias  
  
 mkTableAlias :: Text -> Alias table database leftJoined
-mkTableAlias tableName = Alias $ \(Field _ fieldName) ->
-  Expression $ pure $ H.rawSql $ tableName <> "." <> fieldName
+mkTableAlias tableName = Alias $ \field ->
+  Expression $ pure $ H.rawSql $ tableName <> "." <> fieldName field
 
 emptyAlias :: Alias table database leftJoined
-emptyAlias = Alias $ \(Field _ fieldName) ->
-  Expression $ pure $ H.rawSql fieldName
+emptyAlias = Alias $ \field ->
+  Expression $ pure $ H.rawSql $ fieldName field
 
 data QueryOrdering = Asc SomeExpression | Desc SomeExpression
 
@@ -258,8 +260,18 @@ isNotNull :: Expression 'Nullable a -> Expression 'NotNull Bool
 isNotNull (Expression e) = Expression $ H.isNotNull <$> e
 
 true_, false_ :: Expression nullable Bool
-true_ = Expression $ pure $ H.rawSql "true"
-false_ = Expression $ pure $ H.rawSql "false"
+true_ = Expression $ pure $ H.false_
+false_ = Expression $ pure $ H.true_
+
+in_ :: Expression nullable a -> [Expression nullable a]
+    -> Expression nullable Bool
+in_ e es = Expression $
+           liftA2 H.in_ (runExpression e) (traverse runExpression es)
+
+notIn_ :: Expression nullable a -> [Expression nullable a]
+       -> Expression nullable Bool
+notIn_ e es = Expression $
+              liftA2 H.notIn_ (runExpression e) (traverse runExpression es)
 
 -- | make expression nullable
 nullable :: Expression nullable a -> Expression 'Nullable a
@@ -358,18 +370,18 @@ instance Castable Word64 where
 unsafeCast :: Expression nullable a -> Expression nullable b
 unsafeCast = coerce
 
-fieldText :: Field table database nullable a -> Text
-fieldText (Field table fieldName) = table <> "." <> fieldName
+fieldName :: Field table database nullable a -> Text
+fieldName (Field _ fn) = fn
 
 insertOne :: H.ToSql a
           => Field table database 'NotNull fieldType
           -> Insertor table database a
-insertOne = Insertor . H.insertOne . fieldText
+insertOne = Insertor . H.insertOne . fieldName
 
 insertOneMaybe :: H.ToSql a
                => Field table database 'Nullable fieldType
                -> Insertor table database (Maybe a)
-insertOneMaybe = Insertor . H.insertOne . fieldText
+insertOneMaybe = Insertor . H.insertOne . fieldName
 
 genFst :: (a :*: b) () -> a ()
 genFst (a :*: _) = a
@@ -430,24 +442,46 @@ into :: (a -> Expression nullable b)
 into e f =
   Insertor $
   H.exprInto (\x -> evalState (runExpression $ e x) emptyClauseState)
-  (fieldText f) 
+  (fieldName f) 
 
 lensInto :: H.ToSql b
          => H.Getter a b
          -> Field table database 'NotNull fieldType
          -> Insertor table database a
-lensInto lens a = Insertor $ H.lensInto lens $ fieldText a
+lensInto lens a = Insertor $ H.lensInto lens $ fieldName a
+
+maybeLensInto :: H.ToSql b
+              => H.Getter a (Maybe b)
+              -> Field table database 'Nullable fieldType
+              -> Insertor table database a
+maybeLensInto lens a = Insertor $ H.lensInto lens $ fieldName a
+
+opticInto :: (H.ToSql b , Is k A_Getter )
+          => Optic' k is a b
+          -> Field table database 'NotNull fieldType
+          -> Insertor table database a
+opticInto getter field = (arg . view getter) `into` field
+
+maybeOpticInto :: (H.ToSql b , Is k A_Getter)
+               => Optic' k is a (Maybe b)
+               -> Field table database 'Nullable fieldType
+               -> Insertor table database a
+maybeOpticInto getter field = (argMaybe . view getter) `into` field
+
+tableSql :: Table table database -> H.QueryBuilder
+tableSql (Table mbSchema tableName) =
+  H.rawSql $ foldMap (<> ".") mbSchema <> tableName
 
 insertValues :: Table table database
              -> Insertor table database a
              -> [a]
              -> H.Command
-insertValues (Table _schema tableName) (Insertor i) =
-  H.insertValues (H.rawSql tableName) i
+insertValues table (Insertor i) =
+  H.insertValues (tableSql table) i
 
 valuesAlias :: Alias table database leftJoined
-valuesAlias = Alias $ \(Field _ fieldName) ->
-  Expression $ pure $ H.values $ H.rawSql fieldName
+valuesAlias = Alias $ \field ->
+  Expression $ pure $ H.values $ H.rawSql $ fieldName field
 
 insertUpdateValues :: Table table database
                    -> Insertor table database a
@@ -456,14 +490,14 @@ insertUpdateValues :: Table table database
                        [Updator table database])
                    -> [a]
                    -> H.Command
-insertUpdateValues (Table _schema tableName) (Insertor i) mkUpdators =
-  H.insertUpdateValues (H.rawSql tableName) i updators
+insertUpdateValues table (Insertor i) mkUpdators =
+  H.insertUpdateValues (tableSql table) i updators
   where updators = flip evalState emptyClauseState $ 
                    traverse runUpdator $ mkUpdators emptyAlias valuesAlias
         runUpdator :: Updator table database
                    -> QueryInner (H.QueryBuilder, H.QueryBuilder)  
-        runUpdator (Field _ fieldName := Expression expr) = do
-          (H.rawSql fieldName, ) <$> expr
+        runUpdator (field := Expression expr) = do
+          (H.rawSql $ fieldName field, ) <$> expr
 
 newAlias :: Text -> QueryInner Text
 newAlias prefix = do
@@ -478,23 +512,21 @@ addClauses c = modify $ \clsState ->
 
 from :: Table table database
      -> Query database (Alias table database 'InnerJoined)
-from (Table schema tableName) = Query $
+from table@(Table _ tableName) = Query $
   do alias <- newAlias (Text.take 1 tableName)
-     addClauses $ H.from $
-       H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as` H.rawSql alias
+     addClauses $ H.from $ tableSql table `H.as` H.rawSql alias
      pure $ mkTableAlias alias
 
 innerJoin :: Table table database
           -> (Alias table database 'InnerJoined ->
               Expression nullable Bool)
           -> Query database (Alias table database 'InnerJoined)
-innerJoin (Table schema tableName) joinCondition = Query $ do
+innerJoin table@(Table _ tableName) joinCondition = Query $ do
   alias <- newAlias $ Text.take 1 tableName
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
   addClauses $
-    H.innerJoin [H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as`
-                 H.rawSql alias]
+    H.innerJoin [tableSql table `H.as` H.rawSql alias]
     [exprBuilder]
   pure tblAlias
 
@@ -502,13 +534,12 @@ leftJoin :: Table table database
          -> (Alias table database 'LeftJoined ->
              Expression nullable Bool)
          -> Query database (Alias table database 'LeftJoined)
-leftJoin (Table schema tableName) joinCondition = Query $ do
+leftJoin table@(Table _ tableName) joinCondition = Query $ do
   alias <- newAlias $ Text.take 1 tableName
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
   addClauses $
-    H.leftJoin [H.rawSql (maybe mempty (<> ".") schema <> tableName) `H.as`
-                H.rawSql alias]
+    H.leftJoin [tableSql table `H.as` H.rawSql alias]
     [exprBuilder]
   pure tblAlias
 
@@ -658,14 +689,14 @@ newtype Into database (table :: Symbol) =
 exprInto :: Expression nullable a ->
             Field table database nullable a ->
             Into database table
-exprInto expr (Field _ fieldName) =
-  Into $ (fieldName,) <$> runExpression expr
+exprInto expr field =
+  Into $ (fieldName field,) <$> runExpression expr
 
 insertSelect :: Table table database
              -> Query database [Into database table]
              -> H.Command
-insertSelect (Table schema tbl) (Query query) =
-  H.insertSelect (H.rawSql (maybe mempty (<> ".") schema <> tbl))
+insertSelect table (Query query) =
+  H.insertSelect (tableSql table)
   (map (H.rawSql . fst) intos)
   (map snd intos) clauses
   where (intos, ClauseState clauses _) =
@@ -681,16 +712,16 @@ update :: Table table database
        -> (Alias table database 'InnerJoined ->
            Query database [Updator table database])
        -> H.Command
-update (Table schema tbl) query =
-  H.update [H.rawSql (maybe mempty (<> ".") schema <> tbl)]
+update table query =
+  H.update [tableSql table]
   updators clauses
   where Query runQuery = query emptyAlias
         (updators, ClauseState clauses _) =
           runState (runQuery >>= traverse runUpdator) emptyClauseState
         runUpdator :: Updator table database
                    -> QueryInner (H.QueryBuilder, H.QueryBuilder)  
-        runUpdator (Field _ fieldName := Expression expr) = do
-          (H.rawSql fieldName, ) <$> expr
+        runUpdator (field := Expression expr) = do
+          (H.rawSql $ fieldName field, ) <$> expr
           
           
         

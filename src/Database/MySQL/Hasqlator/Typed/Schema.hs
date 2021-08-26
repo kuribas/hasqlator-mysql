@@ -428,10 +428,14 @@ insertor props dbName ti =
     insertorName = mkName $ insertorNameModifier props ti
     insertorTypeName = mkName $ insertorTypeModifier props ti 
     insertorField :: ColumnInfo -> Q Exp
-    insertorField ci = [e| $(sigE
-                             (varE $ mkName $ insertorFieldModifier props ci)
-                             [t| $(conT insertorTypeName) ->
-                                 $(columnTHType False ci)  |])
+    insertorField ci = [e| ($(if columnNullable ci
+                              then [e| T.argMaybe |]
+                              else [e| T.arg |])
+                             .
+                            $(sigE
+                              (varE $ mkName $ insertorFieldModifier props ci)
+                              [t| $(conT insertorTypeName) ->
+                               $(columnTHType False ci)  |]))
                            `T.into`
                            $(varE $ mkName $
                              fieldsQualifier props <>
