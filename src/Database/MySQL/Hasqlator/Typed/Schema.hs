@@ -9,7 +9,7 @@ module Database.MySQL.Hasqlator.Typed.Schema
   (TableInfo(..), ColumnInfo(..), fetchTableInfo, Sign(..), ColumnType(..),
    pprTableInfo, Properties(..), defaultProperties, makeFields,
    smartUpcase, smartDowncase,
-   makeRecords, makeSelectors, makeInsertors) where
+   makeRecords, makeSelectors, makeInsertors, makeUpdators) where
 import Database.MySQL.Hasqlator
 import qualified Database.MySQL.Hasqlator.Typed as T
 import Database.MySQL.Base(MySQLConn)
@@ -247,6 +247,7 @@ data Properties = Properties
   , includeSchema :: Bool
   , insertorTypeModifier :: TableInfo -> String
   , insertorNameModifier :: TableInfo -> String
+  , updatorNameModifier :: TableInfo -> String
   , selectorNameModifier :: TableInfo -> String
   , fieldsQualifier :: String
   , insertorFieldModifier :: ColumnInfo -> String
@@ -283,12 +284,15 @@ defaultProperties = Properties
          (if smartDowncase n `elem` reserved then "_" else mempty) <> "_tbl"
   , classNameModifier = \n -> "Has_" <> n <> "_field"
   , includeSchema = True
-  , insertorTypeModifier = \TableInfo{tableName} ->
-      let n = Text.unpack tableName
-      in removeUnderscore (smartUpcase n) <> "Fields"
   , insertorNameModifier = \TableInfo{tableName} ->
       let n = Text.unpack tableName
       in smartDowncase (removeUnderscore n) <> "Insertor"
+  , insertorTypeModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in removeUnderscore (smartUpcase n) <> "Fields"
+  , updatorNameModifier = \TableInfo{tableName} ->
+      let n = Text.unpack tableName
+      in smartDowncase (removeUnderscore n) <> "Updator"
   , selectorNameModifier = \TableInfo{tableName} ->
       let n = Text.unpack tableName
       in n <> "_sel"
@@ -298,7 +302,7 @@ defaultProperties = Properties
       in smartDowncase n <> "_field"
   }
     where reserved :: [String]
-          reserved = ["id", "class", "data", "type", "foreign", "import",
+          reserved = ["class", "data", "type", "foreign", "import",
                       "default", "case"]
 
 getColumnTableName :: Properties -> ColumnInfo -> String
@@ -421,7 +425,7 @@ insertor props dbName ti =
                  |]
            , valD (varP insertorName)
              (normalB $ foldr1 (\x y -> [| $(x) <> $(y) |]) $
-              map insertorField $ tableColumns ti)
+              map insertorField $ filter (not . autoIncrement) $ tableColumns ti)
              []
            ]
   where 
@@ -440,6 +444,30 @@ insertor props dbName ti =
                            $(varE $ mkName $
                              fieldsQualifier props <>
                              fieldNameModifier props ci) |]
+
+updator :: Properties -> Name -> TableInfo -> Q [Dec]
+updator props dbName ti =
+  sequence [ sigD
+             updatorName
+             [t| T.Alias $(table) $(database) 'T.InnerJoined
+                -> [T.Updator $(table) $(database)]
+             |]
+           , funD updatorName
+             [ do new <- newName "new"
+                  clause [conP 'T.Alias [varP new]]
+                    (normalB $ listE $ map (updatorField new) $
+                     filter (not . autoIncrement) $ tableColumns ti)
+                    []
+             ]
+           ]
+  where
+    table = litT $ strTyLit $ getTableName props ti
+    database = conT dbName
+    updatorName = mkName $ updatorNameModifier props ti
+    updatorField :: Name -> ColumnInfo -> Q Exp
+    updatorField new ci = [e| $(fieldName) T.:= $(varE new) $(fieldName) |]
+      where fieldName = varE $ mkName $
+                        fieldsQualifier props <> fieldNameModifier props ci
 
 makeSelector :: Properties -> Name -> TableInfo -> Q [Dec]
 makeSelector props dbName ti =
@@ -510,6 +538,10 @@ makeRecords props = traverse (insertorType props)
 makeInsertors :: Properties -> Name -> [TableInfo] -> Q [Dec]
 makeInsertors props dbName tis =
   concat <$> traverse (insertor props dbName) tis
+
+makeUpdators :: Properties -> Name -> [TableInfo] -> Q [Dec]
+makeUpdators props dbName tis =
+  concat <$> traverse (updator props dbName) tis
 
 makeSelectors :: Properties -> Name -> [TableInfo] -> Q [Dec]
 makeSelectors props dbName tis =
