@@ -450,11 +450,14 @@ updator props dbName ti =
   sequence [ sigD
              updatorName
              [t| T.Alias $(table) $(database) 'T.InnerJoined
+                -> T.Alias $(table) $(database) 'T.InnerJoined
                 -> [T.Updator $(table) $(database)]
              |]
            , funD updatorName
-             [ do new <- newName "new"
-                  clause [conP 'T.Alias [varP new]]
+             [ do old <- newName "old"
+                  new <- newName "new"
+                  clause [ conP 'T.Alias [varP old]
+                         , conP 'T.Alias [varP new]]
                     (normalB $ listE $ map (updatorField new) $
                      filter (not . autoIncrement) $ tableColumns ti)
                     []
