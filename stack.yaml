@@ -43,7 +43,7 @@ packages:
 #   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
 #
 extra-deps:
-- mysql-haskell-0.8.4.3
+- ../mysql-haskell
 - tcp-streams-1.0.1.1
 - wire-streams-0.1.1.0
 

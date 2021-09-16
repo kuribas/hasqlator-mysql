@@ -58,6 +58,9 @@ module Database.MySQL.Hasqlator
 
     -- * Updates
     update,
+
+    -- * Deletes
+    delete,
     
     -- * Rendering Queries
     renderStmt, renderPreparedStmt, SQLError(..), QueryBuilder,
@@ -77,7 +80,7 @@ import Control.Applicative
 import Control.Monad.Except
 import Data.Monoid hiding ((<>))
 import Data.String hiding (unwords)
-import Data.List hiding (unwords)
+import Data.List (intersperse)
 import qualified Data.DList as DList
 import GHC.Generics hiding (Selector, from)
 import qualified GHC.Generics as Generics (from)
@@ -246,7 +249,7 @@ data Command = Update [QueryBuilder] [(QueryBuilder, QueryBuilder)] QueryBody
              | InsertSelect QueryBuilder [QueryBuilder] [QueryBuilder] QueryBody
              | forall a.InsertValues QueryBuilder (Insertor a)
                (Maybe [(QueryBuilder, QueryBuilder)]) [a]
-             | forall a.Delete (Query a)
+             | Delete QueryClauses
 
 -- | An @`Insertor` a@ provides a mapping of parts of values of type
 -- @a@ to columns in the database.  Insertors can be combined using `<>`.
@@ -288,8 +291,8 @@ instance ToQueryBuilder Command where
     , "SELECT", parentized $ commaSep rows
     , toQueryBuilder queryBody
     ]
-  toQueryBuilder (Delete query__) =
-    "DELETE " <> toQueryBuilder query__
+  toQueryBuilder (Delete (QueryClauses query__)) =
+    "DELETE " <> toQueryBuilder (appEndo query__ emptyQueryBody)
 
 instance ToQueryBuilder QueryBody where
   toQueryBuilder body =
@@ -394,8 +397,8 @@ instance HasQueryClauses Command where
     InsertSelect table toColumns fromColumns (appEndo clauses queryBody)
   mergeClauses command__@InsertValues{} _ =
     command__
-  mergeClauses (Delete query__) clauses =
-    Delete $ mergeClauses query__ clauses
+  mergeClauses (Delete (QueryClauses query__)) (QueryClauses clauses) =
+    Delete $ QueryClauses $ query__ <> clauses
   
 fromText :: Text -> QueryBuilder
 fromText s = QueryBuilder b b DList.empty
@@ -635,6 +638,9 @@ replaceSelect s (Query _ body) = Query s body
 insertValues :: QueryBuilder -> Insertor a -> [a] -> Command
 insertValues qb i = InsertValues qb i Nothing
 
+delete :: QueryClauses -> Command
+delete = Delete
+
 insertUpdateValues :: QueryBuilder
                    -> Insertor a
                    -> [(QueryBuilder, QueryBuilder)]
@@ -805,7 +811,7 @@ instance FromSql a => FromSql (Maybe a) where
 
 instance FromSql Aeson.Value where
   fromSql r = case r of
-    MySQLText t -> case Aeson.eitherDecodeStrict $ Text.encodeUtf8 t
+    MySQLBytes t -> case Aeson.eitherDecodeStrict t
                    of Right val -> Right val
                       Left err -> Left $ ConversionError $ Text.pack err
     _ -> Left $ TypeError r "Value"
@@ -876,4 +882,4 @@ instance ToSql Bool where
   toSqlValue = MySQLInt8U . fromIntegral . fromEnum
 
 instance ToSql Aeson.Value where
-  toSqlValue = MySQLText . LazyText.toStrict . Aeson.encodeToLazyText
+  toSqlValue = MySQLBytes . LazyBS.toStrict . Aeson.encode

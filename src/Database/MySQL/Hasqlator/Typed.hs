@@ -40,6 +40,9 @@ module Database.MySQL.Hasqlator.Typed
     lensInto, maybeLensInto, opticInto, maybeOpticInto, insertOne, exprInto,
     Into,
 
+    -- * Deletion
+    delete,
+
     -- * Update
     Updator(..), update,
 
@@ -133,7 +136,11 @@ data Table (table :: Symbol) database = Table (Maybe Text) Text
 
 -- | An table alias that can be used inside the Query.  The function
 -- inside the newtype can also be applied directly to create an
--- expression from a field.
+-- expression from a field.  For constructing records, applicativeDo
+-- is the recommended way.  However note that this may fail due to a
+-- bug in ghc, that breaks the polymorphism.  In that case as a
+-- workaround you should use the Alias newtype directly and use the
+-- `@@` operator to create an expression instead
 newtype Alias table database (joinType :: JoinType) =
   Alias { getTableAlias ::
           forall fieldNull a .
@@ -498,6 +505,10 @@ insertUpdateValues table (Insertor i) mkUpdators =
                    -> QueryInner (H.QueryBuilder, H.QueryBuilder)  
         runUpdator (field := Expression expr) = do
           (H.rawSql $ fieldName field, ) <$> expr
+
+delete :: Query database a -> H.Command
+delete (Query qry) = H.delete clauseBody
+  where (ClauseState clauseBody _) = execState qry emptyClauseState
 
 newAlias :: Text -> QueryInner Text
 newAlias prefix = do
