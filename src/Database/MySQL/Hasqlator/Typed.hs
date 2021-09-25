@@ -506,10 +506,11 @@ insertUpdateValues table (Insertor i) mkUpdators =
         runUpdator (field := Expression expr) = do
           (H.rawSql $ fieldName field, ) <$> expr
 
-delete :: Query database a -> H.Command
-delete (Query qry) = H.delete clauseBody
-  where (ClauseState clauseBody _) = execState qry emptyClauseState
-
+delete :: Query database (Alias table database 'InnerJoined) -> H.Command
+delete (Query qry) = H.delete fields clauseBody
+  where (Alias al, ClauseState clauseBody _) = runState qry emptyClauseState
+        fields = flip evalState emptyClauseState $ runExpression $ al $ Field "" "*"
+        
 newAlias :: Text -> QueryInner Text
 newAlias prefix = do
   clsState <- get

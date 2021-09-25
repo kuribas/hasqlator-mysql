@@ -249,7 +249,7 @@ data Command = Update [QueryBuilder] [(QueryBuilder, QueryBuilder)] QueryBody
              | InsertSelect QueryBuilder [QueryBuilder] [QueryBuilder] QueryBody
              | forall a.InsertValues QueryBuilder (Insertor a)
                (Maybe [(QueryBuilder, QueryBuilder)]) [a]
-             | Delete QueryClauses
+             | Delete QueryBuilder QueryClauses
 
 -- | An @`Insertor` a@ provides a mapping of parts of values of type
 -- @a@ to columns in the database.  Insertors can be combined using `<>`.
@@ -291,8 +291,9 @@ instance ToQueryBuilder Command where
     , "SELECT", parentized $ commaSep rows
     , toQueryBuilder queryBody
     ]
-  toQueryBuilder (Delete (QueryClauses query__)) =
-    "DELETE " <> toQueryBuilder (appEndo query__ emptyQueryBody)
+  toQueryBuilder (Delete fields (QueryClauses query__)) =
+    "DELETE " <> fields <> " " <> toQueryBuilder body
+    where body = appEndo query__ emptyQueryBody
 
 instance ToQueryBuilder QueryBody where
   toQueryBuilder body =
@@ -397,8 +398,8 @@ instance HasQueryClauses Command where
     InsertSelect table toColumns fromColumns (appEndo clauses queryBody)
   mergeClauses command__@InsertValues{} _ =
     command__
-  mergeClauses (Delete (QueryClauses query__)) (QueryClauses clauses) =
-    Delete $ QueryClauses $ query__ <> clauses
+  mergeClauses (Delete fields (QueryClauses query__)) (QueryClauses clauses) =
+    Delete fields $ QueryClauses $ query__ <> clauses
   
 fromText :: Text -> QueryBuilder
 fromText s = QueryBuilder b b DList.empty
@@ -638,7 +639,7 @@ replaceSelect s (Query _ body) = Query s body
 insertValues :: QueryBuilder -> Insertor a -> [a] -> Command
 insertValues qb i = InsertValues qb i Nothing
 
-delete :: QueryClauses -> Command
+delete :: QueryBuilder -> QueryClauses -> Command
 delete = Delete
 
 insertUpdateValues :: QueryBuilder
