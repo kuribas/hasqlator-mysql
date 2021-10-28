@@ -28,7 +28,8 @@ module Database.MySQL.Hasqlator.Typed
     Expression, SomeExpression, someExpr, Operator, 
     arg, argMaybe, isNull, isNotNull, nullable, notNull, orNull, unlessNull,
     cast, unsafeCast, op, fun1, fun2, fun3, (=.), (/=.), (>.), (<.), (>=.),
-    (<=.), (&&.), (||.), substr, true_, false_, in_, notIn_, 
+    (<=.), (&&.), (||.), substr, true_, false_, in_, notIn_,
+    and_, or_, All_(..), Any_(..), all_, any_,
     
     -- * Clauses
     from, fromSubQuery, innerJoin, leftJoin, joinSubQuery, leftJoinSubQuery,
@@ -260,6 +261,34 @@ infix 4 <., >., >=., <=., =., /=.
 (||.) = op (H.||.)
 (&&.) = op (H.&&.)
 
+newtype All_ nullable = All_ { getAll_ :: Expression nullable Bool }
+
+instance Semigroup (All_ nullable) where
+  All_ x <> All_ y = All_ $ x &&.y
+instance Monoid (All_ nullable) where
+  mempty = All_ true_
+
+and_ :: Foldable f => f (Expression nullable Bool) -> Expression nullable Bool
+and_ = getAll_ . foldMap All_
+
+all_ :: Foldable f => (a -> Expression nullable Bool) -> f a
+     -> Expression nullable Bool
+all_ f = getAll_ . foldMap (All_ . f)
+
+newtype Any_ nullable = Any_ { getAny_ :: Expression nullable Bool }
+
+instance Semigroup (Any_ nullable) where
+  Any_ x <> Any_ y = Any_ $ x ||. y
+instance Monoid (Any_ nullable) where
+  mempty = Any_ false_
+
+or_ :: Foldable f => f (Expression nullable Bool) -> Expression nullable Bool
+or_ = getAny_ . foldMap Any_
+
+any_ :: Foldable f => (a -> Expression nullable Bool) -> f a
+     -> Expression nullable Bool
+any_ f = getAny_ . foldMap (Any_ . f)
+         
 isNull :: Expression nullable a -> Expression 'NotNull Bool
 isNull (Expression e) = Expression $ H.isNull <$> e
 
@@ -267,8 +296,8 @@ isNotNull :: Expression 'Nullable a -> Expression 'NotNull Bool
 isNotNull (Expression e) = Expression $ H.isNotNull <$> e
 
 true_, false_ :: Expression nullable Bool
-true_ = Expression $ pure $ H.false_
-false_ = Expression $ pure $ H.true_
+true_ = Expression $ pure H.false_
+false_ = Expression $ pure H.true_
 
 in_ :: Expression nullable a -> [Expression nullable a]
     -> Expression nullable Bool
@@ -444,7 +473,7 @@ personInsertor = insertData (name, age)
 -- 
 
 into :: (a -> Expression nullable b)
-     -> Field table database nullable fieldType
+     -> Field table database nullable b
      -> Insertor table database a
 into e f =
   Insertor $
@@ -453,25 +482,25 @@ into e f =
 
 lensInto :: H.ToSql b
          => H.Getter a b
-         -> Field table database 'NotNull fieldType
+         -> Field table database 'NotNull b
          -> Insertor table database a
 lensInto lens a = Insertor $ H.lensInto lens $ fieldName a
 
 maybeLensInto :: H.ToSql b
               => H.Getter a (Maybe b)
-              -> Field table database 'Nullable fieldType
+              -> Field table database 'Nullable b
               -> Insertor table database a
 maybeLensInto lens a = Insertor $ H.lensInto lens $ fieldName a
 
 opticInto :: (H.ToSql b , Is k A_Getter )
           => Optic' k is a b
-          -> Field table database 'NotNull fieldType
+          -> Field table database 'NotNull b
           -> Insertor table database a
 opticInto getter field = (arg . view getter) `into` field
 
 maybeOpticInto :: (H.ToSql b , Is k A_Getter)
                => Optic' k is a (Maybe b)
-               -> Field table database 'Nullable fieldType
+               -> Field table database 'Nullable b
                -> Insertor table database a
 maybeOpticInto getter field = (argMaybe . view getter) `into` field
 
