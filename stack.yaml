@@ -5,7 +5,6 @@
 # https://docs.haskellstack.org/en/stable/yaml_configuration/
 
 # A warning or info to be displayed to the user on config load.
-
 # Resolver to choose a 'specific' stackage snapshot or a compiler version.
 # A snapshot resolver dictates the compiler version and the set of packages
 # to be used for project dependencies. For example:
@@ -19,7 +18,7 @@
 #
 # resolver: ./custom-snapshot.yaml
 # resolver: https://example.com/snapshots/2018-01-01.yaml
-resolver: lts-18.7
+resolver: lts-18.10
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -33,6 +32,10 @@ resolver: lts-18.7
 packages:
 - .
 
+flags:
+  cryptonite:
+    use_target_attributes: false
+
 # Dependency packages to be pulled from upstream that are not in the resolver.
 # These entries can reference officially published versions as well as
 # forks / in-progress versions pinned to a git hash. For example:
@@ -43,7 +46,25 @@ packages:
 #   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
 #
 extra-deps:
-- ../mysql-haskell
+- git: https://github.com/kuribas/hasqlator-mysql.git
+  commit: 8a10b762148d837178035b975dc459ed00c90266
+- git: https://github.com/kuribas/mysql-haskell.git
+  commit: 03bca6a14a8c6148b8b8bfb5f65e9b3ac80836fd
+- git: https://github.com/freckle/hspec-junit-formatter.git
+  commit: e7425264e62d5a66bb65e447e602e83705f0739f
+- hspec-2.8.3
+- hspec-core-2.8.3
+- hspec-discover-2.8.3  
+- quickcheck-text-0.1.2.0
+- generic-arbitrary-0.2.0
+- record-operations-0.0.1
+- generic-optics-2.2.0.0
+- optics-0.4
+- optics-core-0.4
+- optics-extra-0.4
+- optics-th-0.4
+- unordered-containers-0.2.13.0
+- generic-lens-core-2.2.0.0
 - tcp-streams-1.0.1.1
 - wire-streams-0.1.1.0
 
@@ -58,7 +79,7 @@ extra-deps:
 #
 # Require a specific version of stack, using version ranges
 # require-stack-version: -any # Default
-# require-stack-version: ">=2.7"
+# require-stack-version: ">=2.1"
 #
 # Override the architecture used by stack, especially useful on Windows
 # arch: i386

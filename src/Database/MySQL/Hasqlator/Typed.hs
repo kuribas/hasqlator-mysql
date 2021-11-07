@@ -189,7 +189,7 @@ executeQuery conn query = H.executeQuery conn (untypeQuery query)
  
 mkTableAlias :: Text -> Alias table database leftJoined
 mkTableAlias tableName = Alias $ \field ->
-  Expression $ pure $ H.rawSql $ tableName <> "." <> fieldName field
+  Expression $ pure $ H.rawSql $ "`" <> tableName <> "`.`" <> fieldName field <> "`"
 
 emptyAlias :: Alias table database leftJoined
 emptyAlias = Alias $ \field ->
@@ -407,7 +407,7 @@ unsafeCast :: Expression nullable a -> Expression nullable b
 unsafeCast = coerce
 
 fieldName :: Field table database nullable a -> Text
-fieldName (Field _ fn) = fn
+fieldName (Field _ fn) = "`" <> fn <> "`"
 
 insertOne :: H.ToSql a
           => Field table database 'NotNull fieldType
@@ -506,7 +506,7 @@ maybeOpticInto getter field = (argMaybe . view getter) `into` field
 
 tableSql :: Table table database -> H.QueryBuilder
 tableSql (Table mbSchema tableName) =
-  H.rawSql $ foldMap (<> ".") mbSchema <> tableName
+  H.rawSql $ foldMap (<> ".") mbSchema <> "`" <> tableName <> "`"
 
 insertValues :: Table table database
              -> Insertor table database a
