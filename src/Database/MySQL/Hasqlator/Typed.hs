@@ -22,7 +22,7 @@ module Database.MySQL.Hasqlator.Typed
     Query, untypeQuery, executeQuery,
 
     -- * Selectors
-    Selector, sel, selMaybe,
+    Selector, sel, selMaybe, forUpdate, forShare, shareMode,
 
     -- * Expressions
     Expression, SomeExpression, someExpr, Operator, 
@@ -48,7 +48,8 @@ module Database.MySQL.Hasqlator.Typed
     Updator(..), update,
 
     -- * imported from Database.MySQL.Hasqlator
-    H.Getter, H.ToSql, H.FromSql, subQueryExpr, H.executeCommand, H.Command
+    H.Getter, H.ToSql, H.FromSql, subQueryExpr, H.executeCommand, H.Command,
+    H.WaitLock
   )
 where
 import Data.Text (Text)
@@ -189,7 +190,7 @@ executeQuery conn query = H.executeQuery conn (untypeQuery query)
  
 mkTableAlias :: Text -> Alias table database leftJoined
 mkTableAlias tableName = Alias $ \field ->
-  Expression $ pure $ H.rawSql $ "`" <> tableName <> "`.`" <> fieldName field <> "`"
+  Expression $ pure $ H.rawSql $ tableName <> "." <> fieldName field
 
 emptyAlias :: Alias table database leftJoined
 emptyAlias = Alias $ \field ->
@@ -504,9 +505,15 @@ maybeOpticInto :: (H.ToSql b , Is k A_Getter)
                -> Insertor table database a
 maybeOpticInto getter field = (argMaybe . view getter) `into` field
 
+fullTableName :: Table table database -> Text
+fullTableName (Table mbSchema tableName) =
+  foldMap (\schema -> "`" <> schema <> "`.") mbSchema <>
+  "`" <>
+  tableName <>
+  "`"
+  
 tableSql :: Table table database -> H.QueryBuilder
-tableSql (Table mbSchema tableName) =
-  H.rawSql $ foldMap (<> ".") mbSchema <> "`" <> tableName <> "`"
+tableSql tbl = H.rawSql $ fullTableName tbl
 
 insertValues :: Table table database
              -> Insertor table database a
@@ -723,6 +730,17 @@ limit count = Query $ addClauses $ H.limit count
 
 limitOffset :: Int -> Int -> Query database ()
 limitOffset count offset = Query $ addClauses $ H.limitOffset count offset
+
+forUpdate :: [Table table database] -> H.WaitLock -> Query database ()
+forUpdate tables waitLock = Query $ do
+  addClauses $ H.forUpdate (map (H.rawSql . fullTableName) tables) waitLock
+
+forShare :: [Table table database] -> H.WaitLock -> Query database ()
+forShare tables waitLock = Query $ do
+  addClauses $ H.forShare (map (H.rawSql . fullTableName) tables) waitLock
+
+shareMode :: Query database ()
+shareMode = Query $ addClauses $ H.shareMode
 
 newtype Into database (table :: Symbol) =
   Into { runInto :: QueryInner (Text, H.QueryBuilder) }

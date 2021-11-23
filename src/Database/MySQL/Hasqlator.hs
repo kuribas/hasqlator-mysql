@@ -31,7 +31,7 @@ module Database.MySQL.Hasqlator
     orderBy, limit, limitOffset,
 
     -- * Selectors
-    Selector, as,
+    Selector, as, forUpdate, forShare, shareMode, WaitLock,
 
     -- ** polymorphic selector
     sel,
@@ -304,7 +304,8 @@ instance ToQueryBuilder QueryBody where
     (groupByB $ _groupBy body) <>
     renderPredicates "HAVING" (_having body) <>
     orderByB (_orderBy body) <>
-    limitB (_limit body)
+    limitB (_limit body) <>
+    lockModeB (_lockMode body)
     where
       fromB Nothing = []
       fromB (Just table) = ["FROM", table]
@@ -326,6 +327,20 @@ instance ToQueryBuilder QueryBody where
         [ "LIMIT" , fromString (show count)
         , "OFFSET", fromString (show offset) ]
 
+      lockModeB Nothing = []
+      lockModeB (Just (ForUpdate tables waitlock)) =
+        ["FOR UPDATE"] <> updateTablesB tables <> waitLockB waitlock
+      lockModeB (Just (ForShare tables waitlock)) =
+        ["FOR SHARE"] <> updateTablesB tables <> waitLockB waitlock
+      lockModeB (Just ShareMode) = ["LOCK IN SHARE MODE"]
+
+      waitLockB NoWaitLock = ["NOWAIT"]
+      waitLockB WaitLock = []
+      waitLockB SkipLocked = ["SKIP LOCKED"]
+
+      updateTablesB [] = []
+      updateTablesB t = ["OF", commaSep t]
+
 instance ToQueryBuilder (Query a) where
   toQueryBuilder (Query (Selector dl _) body) =
     "SELECT " <> commaSep (DList.toList dl) <> " " <> toQueryBuilder body
@@ -340,6 +355,13 @@ instance ToQueryBuilder JoinType where
   toQueryBuilder RightJoin = "RIGHT JOIN"
   toQueryBuilder OuterJoin = "OUTER JOIN"
 
+data WaitLock = NoWaitLock | WaitLock | SkipLocked
+
+data LockMode =
+  ForUpdate [QueryBuilder] WaitLock |
+  ForShare [QueryBuilder] WaitLock |
+  ShareMode
+
 data QueryBody = QueryBody
   { _from :: Maybe QueryBuilder
   , _joins :: [Join]
@@ -348,6 +370,7 @@ data QueryBody = QueryBody
   , _having :: [QueryBuilder]
   , _orderBy :: [QueryOrdering]
   , _limit :: Maybe (Int, Maybe Int)
+  , _lockMode :: Maybe LockMode
   }
 
 data QueryOrdering = 
@@ -623,7 +646,7 @@ limitOffset count offset = QueryClauses $ Endo $ \qc ->
   qc { _limit = Just (count, Just offset) }
 
 emptyQueryBody :: QueryBody
-emptyQueryBody = QueryBody Nothing [] [] [] [] [] Nothing 
+emptyQueryBody = QueryBody Nothing [] [] [] [] [] Nothing Nothing
 
 select :: Selector a -> QueryClauses -> Query a
 select selector (QueryClauses clauses) =
@@ -679,7 +702,18 @@ rawValues cols = Selector (DList.fromList cols) $
 -- | Ignore the content of the given columns
 rawValues_ :: [QueryBuilder] -> Selector ()
 rawValues_ cols = () <$ rawValues cols
-  
+
+forUpdate :: [QueryBuilder] -> WaitLock -> QueryClauses
+forUpdate qb wl = QueryClauses $ Endo $ \qc ->
+  qc { _lockMode = Just $ ForUpdate qb wl }
+
+forShare :: [QueryBuilder] -> WaitLock -> QueryClauses
+forShare qb wl = QueryClauses $ Endo $ \qc ->
+  qc { _lockMode = Just $ ForShare qb wl }
+
+shareMode :: QueryClauses
+shareMode = QueryClauses $ Endo $ \qc -> qc { _lockMode = Just ShareMode }
+
 -- selector for any bounded integer type
 intFromSql :: forall a.(Show a, Bounded a, Integral a)
             => MySQLValue -> Either SQLError  a
@@ -697,8 +731,10 @@ intFromSql r = case r of
        "Int (" <> show (minBound :: a) <> ", " <> show (maxBound :: a) <> ")"
   where castFromInt :: Int64 -> Either SQLError a
         castFromInt i
-          | i < fromIntegral (minBound :: a) = throwError $ ConversionError "underflow"
-          | i > fromIntegral (maxBound :: a) = throwError $ ConversionError "overflow"
+          | i < fromIntegral (minBound :: a) =
+              throwError $ ConversionError "underflow"
+          | i > fromIntegral (maxBound :: a) =
+              throwError $ ConversionError "overflow"
           | otherwise = pure $ fromIntegral i
         castFromWord :: Word64 -> Either SQLError a
         castFromWord i

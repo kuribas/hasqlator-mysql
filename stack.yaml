@@ -46,8 +46,6 @@ flags:
 #   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
 #
 extra-deps:
-- git: https://github.com/kuribas/hasqlator-mysql.git
-  commit: 8a10b762148d837178035b975dc459ed00c90266
 - git: https://github.com/kuribas/mysql-haskell.git
   commit: 03bca6a14a8c6148b8b8bfb5f65e9b3ac80836fd
 - git: https://github.com/freckle/hspec-junit-formatter.git
