@@ -54,7 +54,7 @@ module Database.MySQL.Hasqlator
 
     -- * Insertion
     Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
-    skipInsert, into, exprInto, Getter, lensInto, insertOne, ToSql,
+    skipInsert, into, exprInto, Getter, lensInto, insertOne, ToSql, insertLess,
 
     -- * Updates
     update,
@@ -105,6 +105,7 @@ import Control.Exception (throw, Exception)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Text as Aeson
 import qualified Data.Text.Lazy as LazyText
+import Data.Maybe (mapMaybe)
 
 class FromSql a where
   fromSql :: MySQLValue -> Either SQLError a
@@ -756,7 +757,16 @@ integerFromSql (MySQLDecimal d) = case floatingOrInteger d of
   Right i -> pure i
 integerFromSql v = throwError $ TypeError v "Integer"
 
-
+-- | Exclude fields to insert.
+insertLess :: Insertor a -> [Text] -> Insertor a
+insertLess (Insertor fields t) toRemove =
+  Insertor (filterList fields) (filterList . t)
+  where
+    filterList = mapMaybe removeMaybe . zip removeIt
+    removeIt = map (`elem` toRemove) fields
+    removeMaybe (True, _) = Nothing
+    removeMaybe (False, x) = Just x
+    
 instance FromSql Bool where
   fromSql (MySQLInt8U x) = pure $ x /= 0
   fromSql (MySQLInt8 x) = pure $ x /= 0
