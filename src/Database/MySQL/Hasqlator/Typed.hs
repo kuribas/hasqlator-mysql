@@ -505,10 +505,10 @@ maybeOpticInto :: (H.ToSql b , Is k A_Getter)
                -> Insertor table database a
 maybeOpticInto getter field = (argMaybe . view getter) `into` field
 
-withoutField :: Insertor table database a
-             -> Field tables database nullable a
+withoutField :: Field tables database nullable a
              -> Insertor table database a
-withoutField (Insertor ins) fld = Insertor $ H.insertLess ins [fieldName fld]
+             -> Insertor table database a
+withoutField fld (Insertor ins) = Insertor $ H.insertLess ins [fieldName fld]
 
 fullTableName :: Table table database -> Text
 fullTableName (Table mbSchema tableName) =
