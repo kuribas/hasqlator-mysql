@@ -39,7 +39,7 @@ module Database.MySQL.Hasqlator.Typed
     Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
     skipInsert, into,
     lensInto, maybeLensInto, opticInto, maybeOpticInto, insertOne, exprInto,
-    Into, withoutField,
+    Into, insertWithout, updateWithout,
 
     -- * Deletion
     delete,
@@ -505,11 +505,16 @@ maybeOpticInto :: (H.ToSql b , Is k A_Getter)
                -> Insertor table database a
 maybeOpticInto getter field = (argMaybe . view getter) `into` field
 
-withoutField :: Field tables database nullable b
-             -> Insertor table database a
-             -> Insertor table database a
-withoutField fld (Insertor ins) = Insertor $ H.insertLess ins [fieldName fld]
+insertWithout :: Field tables database nullable b
+              -> Insertor table database a
+              -> Insertor table database a
+insertWithout fld (Insertor ins) = Insertor $ H.insertLess ins [fieldName fld]
 
+updateWithout :: Field table database nullable a -> [Updator table database]
+              -> [Updator table database]
+updateWithout fld = filter $ \(fld2 := _) -> fld2 `fieldNeq` fld
+  where fieldNeq (Field tbl col) (Field tbl2 col2) = (tbl, col) /= (tbl2, col2)
+    
 fullTableName :: Table table database -> Text
 fullTableName (Table mbSchema tableName) =
   foldMap (\schema -> "`" <> schema <> "`.") mbSchema <>
