@@ -270,7 +270,8 @@ instance ToQueryBuilder Command where
     , toQueryBuilder body
     ] 
 
-  toQueryBuilder (InsertValues _ _ _  []) = "SELECT 'nothing to insert' WHERE false"
+  toQueryBuilder (InsertValues table _ _  []) =
+    unwords ["INSERT INTO", table, "SELECT * FROM", table, "WHERE false"]
   toQueryBuilder (InsertValues table (Insertor cols convert) updates values__) =
     let valuesB = commaSep $
                   map (parentized . commaSep . convert)
