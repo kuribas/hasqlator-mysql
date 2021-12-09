@@ -87,6 +87,7 @@ type family JoinNullable (leftJoined :: JoinType) (field :: Nullable)
     JoinNullable 'LeftJoined _ = 'Nullable
 
 data Field (table :: Symbol) database (nullable :: Nullable) a =
+  AllFields |
   Field Text Text
  
 newtype Expression (nullable :: Nullable) a =
@@ -410,6 +411,7 @@ unsafeCast = coerce
 
 quotedFieldName :: Field table database nullable a -> Text
 quotedFieldName (Field _ fn) = "`" <> fn <> "`"
+quotedFieldName AllFields = "*"
 
 insertOne :: H.ToSql a
           => Field table database 'NotNull fieldType
@@ -515,6 +517,8 @@ updateWithout :: Field table database nullable a -> [Updator table database]
               -> [Updator table database]
 updateWithout fld = filter $ \(fld2 := _) -> fld2 `fieldNeq` fld
   where fieldNeq (Field tbl col) (Field tbl2 col2) = (tbl, col) /= (tbl2, col2)
+        fieldNeq AllFields AllFields = False
+        fieldNeq _ _ = True
     
 quotedTableName :: Table table database -> Text
 quotedTableName (Table mbSchema tableName) =
@@ -556,7 +560,7 @@ insertUpdateValues table (Insertor i) mkUpdators =
 delete :: Query database (Alias table database 'InnerJoined) -> H.Command
 delete (Query qry) = H.delete fields clauseBody
   where (Alias al, ClauseState clauseBody _) = runState qry emptyClauseState
-        fields = flip evalState emptyClauseState $ runExpression $ al $ Field "" "*"
+        fields = flip evalState emptyClauseState $ runExpression $ al AllFields
         
 newAlias :: Text -> QueryInner Text
 newAlias prefix = do
@@ -751,7 +755,7 @@ forShare tables waitLock = Query $ do
   addClauses $ H.forShare (map (H.rawSql . quotedTableName) tables) waitLock
 
 shareMode :: Query database ()
-shareMode = Query $ addClauses $ H.shareMode
+shareMode = Query $ addClauses H.shareMode
 
 newtype Into database (table :: Symbol) =
   Into { runInto :: QueryInner (Text, H.QueryBuilder) }
