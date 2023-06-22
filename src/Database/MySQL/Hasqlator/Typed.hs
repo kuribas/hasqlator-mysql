@@ -13,6 +13,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Database.MySQL.Hasqlator.Typed
   ( -- * Database Types
@@ -20,7 +22,8 @@ module Database.MySQL.Hasqlator.Typed
     quotedTableName, quotedFieldName,
     
     -- * Querying
-    Query, untypeQuery, executeQuery,
+    QueryClauses, Query, mkQuery, untypeQuery, executeQuery, unionAll,
+    unionDistinct,
 
     -- * Selectors
     Selector, sel, selMaybe, forUpdate, forShare, shareMode,
@@ -34,7 +37,7 @@ module Database.MySQL.Hasqlator.Typed
     
     -- * Clauses
     from, fromSubQuery, innerJoin, leftJoin, joinSubQuery, leftJoinSubQuery,
-    where_, groupBy_, having, orderBy, limit, limitOffset,
+    where_, groupBy_, having, orderBy, QueryOrdering(..), limit, limitOffset,
 
     -- * Insertion
     Insertor, insertValues, insertUpdateValues, insertSelect, insertData,
@@ -165,8 +168,18 @@ emptyClauseState = ClauseState mempty Map.empty
 
 type QueryInner a = State ClauseState a
 
-newtype Query database a = Query (QueryInner a)
+newtype QueryClauses database a = QueryClauses (QueryInner a)
   deriving (Functor, Applicative, Monad)
+
+data Query database a = Query (QueryClauses database a)
+                      | UnionAll (Query database a) (Query database a)
+                      | UnionDistinct (Query database a) (Query database a)
+
+unionAll :: Query database a -> Query database a -> Query database a
+unionAll = UnionAll
+
+unionDistinct :: Query database a -> Query database a -> Query database a
+unionDistinct = UnionDistinct
 
 type Operator a b c = forall nullable .
                       (Expression nullable a ->
@@ -175,14 +188,22 @@ type Operator a b c = forall nullable .
 
 infixl 9 @@
 
+mkQuery :: QueryClauses database a -> Query database a
+mkQuery = Query
+
 untypeQuery :: Query database (Selector a) -> H.Query a
-untypeQuery (Query query) =
+untypeQuery (Query (QueryClauses query)) =
   let (selector, clauseState) =
-        runState (do (Selector sel) <- query; sel) emptyClauseState
+        runState (do (Selector sel_) <- query; sel_) emptyClauseState
   in H.select selector $ clausesBuild clauseState
+untypeQuery (UnionAll qr1 qr2) =
+  H.unionAll (untypeQuery qr1) (untypeQuery qr2)
+untypeQuery (UnionDistinct qr1 qr2) =
+  H.unionDistinct (untypeQuery qr1) (untypeQuery qr2)
 
 executeQuery :: MySQL.MySQLConn -> Query database (Selector a) -> IO [a]
-executeQuery conn query = H.executeQuery conn (untypeQuery query)
+executeQuery conn qry = H.executeQuery conn $ untypeQuery qry
+
   
 -- | Create an expression from an aliased table and a field.
 (@@) :: Alias table database (joinType :: JoinType)
@@ -557,8 +578,8 @@ insertUpdateValues table (Insertor i) mkUpdators =
         runUpdator (field := Expression expr) = do
           (H.rawSql $ quotedFieldName field, ) <$> expr
 
-delete :: Query database (Alias table database 'InnerJoined) -> H.Command
-delete (Query qry) = H.delete fields clauseBody
+delete :: QueryClauses database (Alias table database 'InnerJoined) -> H.Command
+delete (QueryClauses qry) = H.delete fields clauseBody
   where (Alias al, ClauseState clauseBody _) = runState qry emptyClauseState
         fields = flip evalState emptyClauseState $ runExpression $ al AllFields
         
@@ -574,8 +595,8 @@ addClauses c = modify $ \clsState ->
   clsState { clausesBuild = clausesBuild clsState <> c }
 
 from :: Table table database
-     -> Query database (Alias table database 'InnerJoined)
-from table@(Table _ tableName) = Query $
+     -> QueryClauses database (Alias table database 'InnerJoined)
+from table@(Table _ tableName) = QueryClauses $
   do alias <- newAlias (Text.take 1 tableName)
      addClauses $ H.from $ tableSql table `H.as` H.rawSql alias
      pure $ mkTableAlias alias
@@ -583,8 +604,8 @@ from table@(Table _ tableName) = Query $
 innerJoin :: Table table database
           -> (Alias table database 'InnerJoined ->
               Expression nullable Bool)
-          -> Query database (Alias table database 'InnerJoined)
-innerJoin table@(Table _ tableName) joinCondition = Query $ do
+          -> QueryClauses database (Alias table database 'InnerJoined)
+innerJoin table@(Table _ tableName) joinCondition = QueryClauses $ do
   alias <- newAlias $ Text.take 1 tableName
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
@@ -596,8 +617,8 @@ innerJoin table@(Table _ tableName) joinCondition = Query $ do
 leftJoin :: Table table database
          -> (Alias table database 'LeftJoined ->
              Expression nullable Bool)
-         -> Query database (Alias table database 'LeftJoined)
-leftJoin table@(Table _ tableName) joinCondition = Query $ do
+         -> QueryClauses database (Alias table database 'LeftJoined)
+leftJoin table@(Table _ tableName) joinCondition = QueryClauses $ do
   alias <- newAlias $ Text.take 1 tableName
   let tblAlias = mkTableAlias alias
   exprBuilder <- runExpression $ joinCondition tblAlias
@@ -616,7 +637,7 @@ class SubQueryExpr (joinType :: JoinType) inExpr outExpr where
   -- elements.
   subJoinGeneric :: Proxy joinType
                  -> inExpr
-                 -> ReaderT Text (State Int)
+                 -> ReaderT Text (State Int) 
                     (DList.DList SomeExpression, outExpr)
 
 instance ( SubQueryExpr joinType (a ()) (c ())
@@ -626,7 +647,7 @@ instance ( SubQueryExpr joinType (a ()) (c ())
     (lftBuilder, outLft) <- subJoinGeneric p l
     (rtBuilder, outRt) <- subJoinGeneric p r
     pure (lftBuilder <> rtBuilder, outLft :*: outRt)
-          
+    
 instance SubQueryExpr joinType (a ()) (b ()) =>
          SubQueryExpr joinType (M1 m1 m2 a ()) (M1 m3 m4 b ()) where
   subJoinGeneric p (M1 x) = fmap M1 <$> subJoinGeneric p x
@@ -647,28 +668,40 @@ instance JoinNullable joinType nullable ~ nullable2 =>
        )
 
 -- update the aliases, but create and return new query clauses
-runAsSubQuery :: Query database a -> QueryInner (H.QueryClauses, a)
-runAsSubQuery (Query sq) =
+runAsSubQuery :: QueryClauses database a -> QueryInner (H.QueryClauses, a)
+runAsSubQuery (QueryClauses sq) =
   do ClauseState currentClauses currentAliases <- get
      let (subQueryRet, ClauseState subQueryBody newAliases) =
            runState sq (ClauseState mempty currentAliases)
      put $ ClauseState currentClauses newAliases
      pure (subQueryBody, subQueryRet)
 
+subQuerySelect :: Query database (Expression nullable a)
+               -> QueryInner (H.Query ())
+subQuerySelect (Query sq) = do
+  (subQueryBody, Expression sqSelect) <- runAsSubQuery sq 
+  selectBuilder <- sqSelect
+  pure $ H.select (H.rawValues_ [selectBuilder]) subQueryBody
+subQuerySelect (UnionAll sq1 sq2) = do
+  q1 <- subQuerySelect sq1
+  q2 <- subQuerySelect sq2
+  pure $ H.unionAll q1 q2
+subQuerySelect (UnionDistinct sq1 sq2) = do
+  q1 <- subQuerySelect sq1
+  q2 <- subQuerySelect sq2
+  pure $ H.unionDistinct q1 q2
+  
 subQueryExpr :: Query database (Expression nullable a) -> Expression nullable a
-subQueryExpr sq = Expression $
-  do (subQueryBody, Expression subQuerySelect) <- runAsSubQuery sq 
-     selectBuilder <- subQuerySelect
-     pure $ H.subQuery $ H.select (H.rawValues_ [selectBuilder]) subQueryBody
+subQueryExpr sqr = Expression $ H.subQuery <$> subQuerySelect sqr
 
--- 
-subJoinBody :: (Generic inExprs,
-              Generic outExprs,
-              SubQueryExpr joinType (Rep inExprs ()) (Rep outExprs ()))
-            => Proxy joinType
-            -> Query database inExprs
-            -> QueryInner (H.QueryBuilder, outExprs)
-subJoinBody p sq = do
+subJoinSelect :: forall inExprs outExprs joinType database.
+                 (Generic inExprs,
+                  Generic outExprs,
+                  SubQueryExpr joinType (Rep inExprs ()) (Rep outExprs ()))
+              => Proxy joinType
+              -> Query database inExprs
+              -> QueryInner (H.Query (), outExprs)
+subJoinSelect p (Query sq) = do
   sqAlias <- newAlias "sq"
   (subQueryBody, sqExprs) <- runAsSubQuery sq
   let from' :: Generic inExprs => inExprs -> Rep inExprs ()
@@ -681,16 +714,34 @@ subJoinBody p sq = do
                                   from' sqExprs
       outExpr = to' outExprRep
   selectBuilder <- DList.toList <$> traverse runSomeExpression selectExprs
-  pure ( H.subQuery $ H.select (H.rawValues_ selectBuilder) subQueryBody
+  pure ( H.select (H.rawValues_ selectBuilder) subQueryBody
        , outExpr)
+subJoinSelect p (UnionAll sq1 sq2) = do
+  (sqr1, outExpr) <- subJoinSelect p sq1
+  (sqr2, _) <- subJoinSelect @inExprs @outExprs p sq2
+  pure (H.unionAll sqr1 sqr2, outExpr)
+subJoinSelect p (UnionDistinct sq1 sq2) = do
+  (sqr1, outExpr) <- subJoinSelect p sq1
+  (sqr2, _) <- subJoinSelect @inExprs @outExprs p sq2
+  pure (H.unionDistinct sqr1 sqr2, outExpr)
+
+subJoinBody :: (Generic inExprs,
+              Generic outExprs,
+              SubQueryExpr joinType (Rep inExprs ()) (Rep outExprs ()))
+            => Proxy joinType
+            -> Query database inExprs
+            -> QueryInner (H.QueryBuilder, outExprs)
+subJoinBody p sq = do
+  (sqr, outExpr) <- subJoinSelect p sq
+  pure (H.subQuery sqr, outExpr)
 
 joinSubQuery :: (Generic inExprs,
                  Generic outExprs,
                  SubQueryExpr 'InnerJoined (Rep inExprs ()) (Rep outExprs ()))
              => Query database inExprs
              -> (outExprs -> Expression nullable Bool)
-             -> Query database outExprs
-joinSubQuery sq condition = Query $ do
+             -> QueryClauses database outExprs
+joinSubQuery sq condition = QueryClauses $ do
   (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'InnerJoined) sq
   conditionBuilder <- runExpression $ condition outExpr
   addClauses $ H.innerJoin [subQueryBody] [conditionBuilder]
@@ -701,8 +752,8 @@ leftJoinSubQuery :: (Generic inExprs,
                      SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
                  => Query database inExprs
                  -> (outExprs -> Expression nullable Bool)
-                 -> Query database outExprs
-leftJoinSubQuery sq condition = Query $ do
+                 -> QueryClauses database outExprs
+leftJoinSubQuery sq condition = QueryClauses $ do
   (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq
   conditionBuilder <- runExpression $ condition outExpr
   addClauses $ H.leftJoin [subQueryBody] [conditionBuilder]
@@ -712,50 +763,50 @@ fromSubQuery :: (Generic inExprs,
                  Generic outExprs,
                  SubQueryExpr 'LeftJoined (Rep inExprs ()) (Rep outExprs ()))
              => Query database inExprs
-             -> Query database outExprs
-fromSubQuery sq = Query $ do              
+             -> QueryClauses database outExprs
+fromSubQuery sq = QueryClauses $ do              
   (subQueryBody, outExpr) <- subJoinBody (Proxy :: Proxy 'LeftJoined) sq 
   addClauses $ H.from subQueryBody
   pure outExpr
 
-where_ :: Expression 'NotNull Bool -> Query database ()
-where_ expr = Query $ do
+where_ :: Expression 'NotNull Bool -> QueryClauses database ()
+where_ expr = QueryClauses $ do
   exprBuilder <- runExpression expr
   addClauses $ H.where_ [exprBuilder]
 
-groupBy_ :: [SomeExpression] -> Query database ()
-groupBy_ columns = Query $ do
+groupBy_ :: [SomeExpression] -> QueryClauses database ()
+groupBy_ columns = QueryClauses $ do
   columnBuilders <- traverse runSomeExpression columns
   addClauses $ H.groupBy_ columnBuilders
 
-having :: Expression nullable Bool -> Query database ()
-having expr = Query $ do
+having :: Expression nullable Bool -> QueryClauses database ()
+having expr = QueryClauses $ do
   exprBuilder <- runExpression expr
   addClauses $ H.having [exprBuilder]
 
-orderBy :: [QueryOrdering] -> Query database ()
-orderBy ordering = Query $
+orderBy :: [QueryOrdering] -> QueryClauses database ()
+orderBy ordering = QueryClauses $
   do newOrdering <- traverse orderingToH ordering
      addClauses $ H.orderBy newOrdering
   where orderingToH (Asc x) = H.Asc <$> runSomeExpression x
         orderingToH (Desc x) = H.Desc <$> runSomeExpression x
 
-limit :: Int -> Query database ()
-limit count = Query $ addClauses $ H.limit count
+limit :: Int -> QueryClauses database ()
+limit count = QueryClauses $ addClauses $ H.limit count
 
-limitOffset :: Int -> Int -> Query database ()
-limitOffset count offset = Query $ addClauses $ H.limitOffset count offset
+limitOffset :: Int -> Int -> QueryClauses database ()
+limitOffset count offset = QueryClauses $ addClauses $ H.limitOffset count offset
 
-forUpdate :: [Table table database] -> H.WaitLock -> Query database ()
-forUpdate tables waitLock = Query $ do
+forUpdate :: [Table table database] -> H.WaitLock -> QueryClauses database ()
+forUpdate tables waitLock = QueryClauses $ do
   addClauses $ H.forUpdate (map (H.rawSql . quotedTableName) tables) waitLock
 
-forShare :: [Table table database] -> H.WaitLock -> Query database ()
-forShare tables waitLock = Query $ do
+forShare :: [Table table database] -> H.WaitLock -> QueryClauses database ()
+forShare tables waitLock = QueryClauses $ do
   addClauses $ H.forShare (map (H.rawSql . quotedTableName) tables) waitLock
 
-shareMode :: Query database ()
-shareMode = Query $ addClauses H.shareMode
+shareMode :: QueryClauses database ()
+shareMode = QueryClauses $ addClauses H.shareMode
 
 newtype Into database (table :: Symbol) =
   Into { runInto :: QueryInner (Text, H.QueryBuilder) }
@@ -767,14 +818,14 @@ exprInto expr field =
   Into $ (quotedFieldName field,) <$> runExpression expr
 
 insertSelect :: Table table database
-             -> Query database [Into database table]
+             -> QueryClauses database [Into database table]
              -> H.Command
-insertSelect table (Query query) =
+insertSelect table (QueryClauses qry) =
   H.insertSelect (tableSql table)
   (map (H.rawSql . fst) intos)
   (map snd intos) clauses
   where (intos, ClauseState clauses _) =
-          runState (query >>= traverse runInto) emptyClauseState
+          runState (qry >>= traverse runInto) emptyClauseState
 
 infix 0 :=
 
@@ -784,12 +835,11 @@ data Updator table database =
 
 update :: Table table database
        -> (Alias table database 'InnerJoined ->
-           Query database [Updator table database])
+           QueryClauses database [Updator table database])
        -> H.Command
-update table query =
-  H.update [tableSql table]
-  updators clauses
-  where Query runQuery = query emptyAlias
+update table qry =
+  H.update [tableSql table] updators clauses
+  where QueryClauses runQuery = qry emptyAlias
         (updators, ClauseState clauses _) =
           runState (runQuery >>= traverse runUpdator) emptyClauseState
         runUpdator :: Updator table database

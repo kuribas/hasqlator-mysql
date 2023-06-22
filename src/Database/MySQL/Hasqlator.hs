@@ -23,7 +23,7 @@ Portability : ghc
 
 module Database.MySQL.Hasqlator
   ( -- * Querying
-    Query, Command, select, mergeSelect, replaceSelect,
+    Query, Command, select, unionDistinct, unionAll, mergeSelect, replaceSelect,
 
     -- * Query Clauses
     QueryClauses, from, innerJoin, leftJoin, rightJoin, outerJoin, emptyJoins,
@@ -133,11 +133,15 @@ renderPreparedStmt a = (Builder.toLazyByteString pstmt, DList.toList args)
 -- `SQLError` exception.  See the mysql-haskell package for other
 -- exceptions it may throw.
 executeQuery :: MySQLConn -> Query a -> IO [a]
-executeQuery conn q@(Query s _) =
-  do is <- fmap snd $ MySQL.query_ conn $ MySQL.Query $ renderStmt q
+executeQuery conn q =
+  do let getSelector :: Query a -> Selector a
+         getSelector (Query s _) = s
+         getSelector (UnionAll q1 _) = getSelector q1
+         getSelector (UnionDistinct q1 _) = getSelector q1
+     is <- fmap snd $ MySQL.query_ conn $ MySQL.Query $ renderStmt q
      results <- Streams.toList is
-     for results $ either throw pure . runSelector s
-
+     for results $ either throw pure . runSelector (getSelector q)
+     
 -- | Execute a Command which doesn't return a result-set. May throw a
 -- `SQLError` exception.  See the mysql-haskell package for other
 -- exceptions it may throw.
@@ -245,7 +249,12 @@ instance Semigroup a => Semigroup (Selector a) where
 instance Monoid a => Monoid (Selector a) where
   mempty = pure mempty
 
+-- | `Query a` represents a query returning values of type `a`.
 data Query a = Query (Selector a) QueryBody
+             | UnionAll (Query a) (Query a)
+             | UnionDistinct (Query a) (Query a)
+-- | A command is a database query that doesn't return a value, but is
+-- executed for the side effect (inserting, updating, deleteing).
 data Command = Update [QueryBuilder] [(QueryBuilder, QueryBuilder)] QueryBody
              | InsertSelect QueryBuilder [QueryBuilder] [QueryBuilder] QueryBody
              | forall a.InsertValues QueryBuilder (Insertor a)
@@ -346,6 +355,14 @@ instance ToQueryBuilder QueryBody where
 instance ToQueryBuilder (Query a) where
   toQueryBuilder (Query (Selector dl _) body) =
     "SELECT " <> commaSep (DList.toList dl) <> " " <> toQueryBuilder body
+  toQueryBuilder (UnionAll q1 q2) =
+    parentized (toQueryBuilder q1) <>
+    " UNION ALL " <>
+    parentized (toQueryBuilder q2)
+  toQueryBuilder (UnionDistinct q1 q2) =
+    parentized (toQueryBuilder q1) <>
+    " UNION " <>
+    parentized (toQueryBuilder q2)
 
 rawSql :: Text -> QueryBuilder
 rawSql t = QueryBuilder builder builder DList.empty where
@@ -408,24 +425,6 @@ instance Monoid (Insertor a) where
 instance Contravariant Insertor where
   contramap f (Insertor x g) = Insertor x (g . f)
 
-class HasQueryClauses a where
-  mergeClauses :: a -> QueryClauses -> a
-
-instance HasQueryClauses (Query a) where
-  mergeClauses (Query selector body) (QueryClauses clauses) =
-    Query selector (clauses `appEndo` body)
-
-instance HasQueryClauses Command where
-  mergeClauses (Update table setting body) (QueryClauses clauses) =
-    Update table setting (clauses `appEndo` body)
-  mergeClauses (InsertSelect table toColumns fromColumns queryBody)
-    (QueryClauses clauses) =
-    InsertSelect table toColumns fromColumns (appEndo clauses queryBody)
-  mergeClauses command__@InsertValues{} _ =
-    command__
-  mergeClauses (Delete fields (QueryClauses query__)) (QueryClauses clauses) =
-    Delete fields $ QueryClauses $ query__ <> clauses
-  
 fromText :: Text -> QueryBuilder
 fromText s = QueryBuilder b b DList.empty
   where b = Builder.byteString $ Text.encodeUtf8 s
@@ -505,19 +504,25 @@ negate_ x = fun "-" [x]
 sum_ x = fun "sum" [x]
 
 false_, true_ :: QueryBuilder
+-- | False
 false_ = rawSql "false"
+-- | True
 true_ = rawSql "true"
 
+-- | VALUES
 values :: QueryBuilder -> QueryBuilder
 values x = fun "values" [x]
 
+-- | IS NULL
 isNull :: QueryBuilder -> QueryBuilder
 isNull e = parentized $ e <> " IS NULL"
 
+-- | IS NOT NULL expression
 isNotNull :: QueryBuilder -> QueryBuilder
 isNotNull e = parentized $ e <> " IS NOT NULL"
 
--- | insert an expression
+-- | insert an SQL expression.  Takes a function that generates the
+-- SQL expression from the input.
 exprInto :: (a -> QueryBuilder) -> Text -> Insertor a
 exprInto f s = Insertor [s] (\t -> [f t])
 
@@ -589,9 +594,11 @@ type Getter s a = (a -> Const a a) -> s -> Const a s
 lensInto :: ToSql b => Getter a b -> Text -> Insertor a
 lensInto lens = into (getConst . lens Const)
 
+-- | (<subquery>)
 subQuery :: ToQueryBuilder a => a -> QueryBuilder
 subQuery = parentized . toQueryBuilder
-  
+
+-- | FROM table
 from :: QueryBuilder -> QueryClauses
 from table = QueryClauses $ Endo $ \qc -> qc {_from = Just table}
 
@@ -599,74 +606,134 @@ joinClause :: JoinType -> [QueryBuilder] -> [QueryBuilder] -> QueryClauses
 joinClause tp tables conditions = QueryClauses $ Endo $ \qc ->
   qc { _joins = Join tp tables conditions : _joins qc }
 
-innerJoin :: [QueryBuilder] -> [QueryBuilder] -> QueryClauses
+-- | INNER JOIN table1, ... ON cond1, cond2, ...
+innerJoin ::
+  -- | tables
+  [QueryBuilder] ->
+  -- | on expressions, joined by AND
+  [QueryBuilder] ->
+  QueryClauses
 innerJoin = joinClause InnerJoin
 
-leftJoin :: [QueryBuilder] -> [QueryBuilder] -> QueryClauses
+-- | LEFT JOIN
+leftJoin ::
+  -- | tables
+  [QueryBuilder] ->
+  -- | on expressions, joined by AND
+  [QueryBuilder] ->
+  QueryClauses
 leftJoin = joinClause LeftJoin
 
-rightJoin :: [QueryBuilder] -> [QueryBuilder] -> QueryClauses
+-- | RIGHT JOIN
+rightJoin ::
+  -- | tables
+  [QueryBuilder] ->
+  -- | on expressions, joined by AND
+  [QueryBuilder] ->
+  QueryClauses
 rightJoin = joinClause RightJoin
 
-outerJoin :: [QueryBuilder] -> [QueryBuilder] -> QueryClauses
+-- | OUTER JOIN
+outerJoin ::
+  -- | tables
+  [QueryBuilder] ->
+  -- | on expressions, joined by AND
+  [QueryBuilder] ->
+  QueryClauses
 outerJoin = joinClause OuterJoin
 
+-- | remove all existing joins
 emptyJoins :: QueryClauses
 emptyJoins = QueryClauses $ Endo $ \qc ->
   qc { _joins = [] }
 
+-- | WHERE expression1, expression2, ...
 where_ :: [QueryBuilder] -> QueryClauses
 where_ conditions = QueryClauses $ Endo $ \qc ->
   qc { _where_ = reverse conditions ++ _where_ qc}
 
+-- | remove all existing where expressions
 emptyWhere :: QueryClauses
 emptyWhere = QueryClauses $ Endo $ \qc ->
   qc { _where_ = [] }
 
+-- | GROUP BY e1, e2, ...
 groupBy_ :: [QueryBuilder] -> QueryClauses
 groupBy_ columns = QueryClauses $ Endo $ \qc ->
   qc { _groupBy = columns }
 
+-- | HAVING e1, e2, ...
 having :: [QueryBuilder] -> QueryClauses
 having conditions = QueryClauses $ Endo $ \qc ->
   qc { _having = reverse conditions ++ _having qc }
 
+-- | remove having expression
 emptyHaving :: QueryClauses
 emptyHaving = QueryClauses $ Endo $ \qc ->
   qc { _having = [] }
 
+-- | ORDER BY e1, e2, ...
 orderBy :: [QueryOrdering] -> QueryClauses
 orderBy ordering = QueryClauses $ Endo $ \qc ->
   qc { _orderBy = ordering }
 
+-- | LIMIT n
 limit :: Int -> QueryClauses
 limit count = QueryClauses $ Endo $ \qc ->
   qc { _limit = Just (count, Nothing) }
 
-limitOffset :: Int -> Int -> QueryClauses
+-- | LIMIT count, offset
+limitOffset ::
+  -- | count
+  Int ->
+  -- | offset
+  Int ->
+  QueryClauses
 limitOffset count offset = QueryClauses $ Endo $ \qc ->
   qc { _limit = Just (count, Just offset) }
 
 emptyQueryBody :: QueryBody
 emptyQueryBody = QueryBody Nothing [] [] [] [] [] Nothing Nothing
 
+-- | SELECT
 select :: Selector a -> QueryClauses -> Query a
 select selector (QueryClauses clauses) =
   Query selector $ clauses `appEndo` emptyQueryBody
 
+-- | qry1 UNION ALL qry2
+unionAll :: Query a -> Query a -> Query a
+unionAll = UnionAll
+
+-- | UNION 
+unionDistinct :: Query a -> Query a -> Query a
+unionDistinct = UnionDistinct
+
+-- | Merge a new @Selector@ in a query.
 mergeSelect :: Query b -> (a -> b -> c) -> Selector a -> Query c
 mergeSelect (Query selector2 body) f selector1 =
   Query (liftA2 f selector1 selector2) body
+mergeSelect (UnionAll q1 q2) f s =
+  UnionAll (mergeSelect q1 f s) (mergeSelect q2 f s)
+mergeSelect (UnionDistinct q1 q2) f s =
+  UnionDistinct (mergeSelect q1 f s) (mergeSelect q2 f s)
 
+-- | Replace the @Selector@ from a Query.
 replaceSelect :: Selector a -> Query b -> Query a
 replaceSelect s (Query _ body) = Query s body
+replaceSelect s (UnionAll q1 q2) =
+  UnionAll (replaceSelect s q1) (replaceSelect s q2)
+replaceSelect s (UnionDistinct q1 q2) =
+  UnionDistinct (replaceSelect s q1) (replaceSelect s q2)
 
+-- | insert values using the given insertor.
 insertValues :: QueryBuilder -> Insertor a -> [a] -> Command
 insertValues qb i = InsertValues qb i Nothing
 
+-- | DELETE
 delete :: QueryBuilder -> QueryClauses -> Command
 delete = Delete
 
+-- | INSERT UPDATE
 insertUpdateValues :: QueryBuilder
                    -> Insertor a
                    -> [(QueryBuilder, QueryBuilder)]
