@@ -4,7 +4,7 @@ hasqlator-mysql
 Hasqlator is a SQL generation library for haskell.  This package is
 the mysql version of the package.
 
-# Why yes another database library?
+## Why yes another database library?
 
 There are already many database libraries, postgresql-simple,
 mysql-simple, ..., selda, beam, esqueleto, opaleye, squeal, ...
@@ -26,7 +26,7 @@ The upper layer adds on top of that the ability to verify that queries
 conform to the schema.  This has more type level complexity, but
 doesn't go as far as trying to prove the whole query correct.
 
-# Layer 1
+## Layer 1
 
 Layer one allows you to compose query clauses using a monoid, like
 building strings: 
@@ -59,7 +59,7 @@ This creates a select clause:
 and marshalls the return values from `name` and `age` into the correct
 haskell type, in this case by combining them into a tuple.
 
-# SQL output
+## SQL output
 
 The SQL output should match the code!  .  This way, you know
 exactly what SQL code would be generated, and learning the library
@@ -89,7 +89,7 @@ INNER JOIN department as d ON user.department_id =. d.id
 WHERE age > ?
 ```
 
-# Predictable datatype mapping
+## Predictable datatype mapping
 
 Each SQL datatype matches one haskell datatype, and vice versa.  Makes
 it easy to use when the databases already exist.
@@ -107,7 +107,7 @@ it easy to use when the databases already exist.
 | ByteString           | BLOB         |
 | TEXT                 | Text         |
 
-# Layer 2: verifying queries against the schema
+## Layer 2: verifying queries against the schema
 
 THe second layer allows you to verify if your query matches the
 schema.  To do this you must express the schema as haskell values:
@@ -145,7 +145,7 @@ includes the table, so you can only apply the right fields to it.
 Finally you return an Applicative `Selector` Functor that will do the
 convertion between SQL and haskell.
 
-# TODO
+## TODO
 
 - More documentation and examples
 - Port to other databases (postgresql, sqlite, ...).  Currently only
