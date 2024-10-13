@@ -92,8 +92,8 @@ import Data.Int
 import Data.Time
 import qualified Data.ByteString as StrictBS
 import qualified Data.ByteString.Lazy as LazyBS
-import Data.ByteString.Lazy.Builder (Builder)
-import qualified Data.ByteString.Lazy.Builder as Builder
+import Data.ByteString.Builder (Builder)
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text as Text
 import Data.Text (Text)
