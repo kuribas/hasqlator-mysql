@@ -1,30 +1,28 @@
 hasqlator-mysql
 ====================
 
-Hasqlator is a SQL generation library for haskell.  This package is
-the mysql version of the package.
+Hasqlator is a SQL generation library for haskell that attempts to
+stay close to SQL.  This package is the mysql version of the package.
 
-## Why yes another database library?
+## Why yet another database library?
 
-There are already many database libraries, postgresql-simple,
-mysql-simple, ..., selda, beam, esqueleto, opaleye, squeal, ...
+The design goal of hasqlator is to stay close to SQL, so it can offer
+all the features you expect from SQL, but at the same time offer the
+benefits of haskell, which is composability, type safety, using
+familiar abstractions (monoid, applicative, monad), offer (optional)
+validation against the schema.
 
-Why would we need another one?  One one side, many database libraries
-are pretty sofisticated, and provide a lot of safety, but for the
-expense of complexity.  On the other side are the simple libraries,
-which are not much more than a wrapper over sql.  However these simple
-libraries make constructing queries dynamically inconvenient.  What I
-missed was a library that is easy enough to use, but still has
-composable queries, type safe conversion, looks like SQL and supports
-most of SQL features.  Furthermore I wanted it to work with existing
-databases, and have an easy and predictable mapping between SQL
-datatypes and haskell datatypes.
+While there already exist many databases, I felt that they often add extra
+layers on top of SQL, which I want to keep to a minimum.  This makes
+it possible to write optimized queries in SQL, and to easily port them
+to haskell.
 
-Hasqlator does this using a two layered approach.  The bottom layer
-provides less type safety, and is as simple as using a string builder.
-The upper layer adds on top of that the ability to verify that queries
-conform to the schema.  This has more type level complexity, but
-doesn't go as far as trying to prove the whole query correct.
+Hasqlator tries to avoid type level complexity, but optionally allows
+it using a two layered approach.  The bottom layer provides less type
+safety, and is as simple as using a string builder.  The upper layer
+adds on top of that the ability to verify that queries conform to the
+schema.  This has more type level complexity, but doesn't go as far as
+trying to prove the whole query correct.
 
 ## Layer 1
 
